@@ -7,3 +7,9 @@ Version 0.3.2a
 Version 0.3.1a
 - Minor Interface Changes
 - Sort emulators List by folder name
+
+
+Version 0.5.1a
+- Changes to FABGL (video and keyboard)
+- Minor bug fixes
+- Removing FABGL folder from /include, now its in the platformio.ini
