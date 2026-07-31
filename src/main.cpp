@@ -1,12 +1,14 @@
 #include <Arduino.h>
 #include <SD.h>
-//#include <SPI.h>
 #include <Preferences.h>
 #include <fabgl.h>
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "nvs_flash.h"
 #include "logo.h"
+#include <WiFi.h>
+#include <esp_wifi.h>
+
 
 
 
@@ -35,9 +37,11 @@
 #define KEY_R_KEY   0x2D
 #define KEY_ESC     0x76
 #define KEY_SPACE   0x29
+#define KEY_F2      0x06
+#define KEY_2       0x1E
 
 #define SPEAKER_PIN 25
-#define VERSION "ver 0.5.1a"
+#define VERSION "ver 0.6.0a"
 
 static fabgl::Bitmap* infoBitmap = nullptr;
 static char lastBitmapPath[128] = "";
@@ -45,11 +49,12 @@ static char lastBitmapPath[128] = "";
 #define HRES  320
 #define VRES  240
 
-int statusY = 43;
+int statusY_original = 43;
+int statusY = 68;
 
 #define MENU_LINE_H   12
-#define MAX_VISIBLE   12   
-#define MENU_Y_START  45
+#define MAX_VISIBLE   13   
+#define MENU_Y_START  68
 #define MAX_ENTRIES   35
 
 
@@ -61,6 +66,8 @@ int statusY = 43;
 char infoText[512] = "";
 
 //#include "scroller.h"
+
+String wifiIP = "";
 
 const uint32_t AUTOBOOT_MS = 10000;
 
@@ -90,6 +97,28 @@ void IRAM_ATTR ps2_isr() {
         ps2_head = (ps2_head + 1) % PS2_BUFFER_SIZE;
         ps2_bit = 0;
         ps2_data = 0;
+    }
+}
+
+void wifiInit() {
+    if (!SD.exists("/wificonfig.rc")) return;
+    File f = SD.open("/wificonfig.rc");
+    if (!f) return;
+    String ssid = f.readStringUntil('\n'); ssid.trim();
+    String pass = f.readStringUntil('\n'); pass.trim();
+    f.close();
+    if (ssid.length() == 0) return;
+    Serial.printf("WiFi: conectando em '%s'...\n", ssid.c_str());
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    int tries = 0;
+    while (WiFi.status() != WL_CONNECTED && tries < 20) {
+        delay(500); tries++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiIP = WiFi.localIP().toString();
+        Serial.printf("WiFi: conectado! IP: %s\n", wifiIP.c_str());
     }
 }
 
@@ -151,14 +180,15 @@ void drawString(int x, int y, const char* str, Color ink, Color paper) {
     cv.drawText( x, y, str);
 }
 
-void drawString(const fabgl::FontInfo* font, int x, int y, const char* str, Color ink, Color paper) {
+/*
+void drawStrings(const fabgl::FontInfo* font, int x, int y, const char* str, Color ink, Color paper) {
     cv.selectFont(font);
     cv.setPenColor(ink);
     cv.setBrushColor(paper);
     cv.setGlyphOptions(GlyphOptions().FillBackground(true));
     cv.drawText( x, y, str);
 }
-
+*/
 void fillRect(int x, int y, int w, int h, Color color) {
     cv.setBrushColor(color);
     cv.fillRectangle(x, y, x + w - 1, y + h - 1);
@@ -207,20 +237,28 @@ Preferences prefs;
 
 void statusLine(const char* label, const char* value, Color color) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "%-14s %s", label, value);
-    drawString(20, statusY, buf, color, C_BLACK);
+    if (label[0] == '\0')
+        snprintf(buf, sizeof(buf), "%s", value);
+    else
+        snprintf(buf, sizeof(buf), "%s %s", label, value);
+
+    drawString(10, statusY, buf, color, C_BLACK);
     Serial.printf("[%s] %s\n", label, value);
-    statusY += 10;
+    statusY += 12;
 }
 
-void drawProgress(int percent, size_t written, size_t total) {
+void statusLine(const char* value, Color color) {
+    statusLine("", value, color);
+}
+
+void drawProgress(int percent, size_t written, size_t total, const char* action = "Flashing") {
     char buf[50];
-    snprintf(buf, sizeof(buf), "Flashing %3d%%  (%dKB/%dKB)  ",
-             percent, (int)(written/1024), (int)(total/1024));
+    snprintf(buf, sizeof(buf), "%s %3d%%  (%dKB/%dKB)  ",
+             action, percent, (int)(written/1024), (int)(total/1024));
     drawString(20, statusY, buf, C_YELLOW, C_BLACK);
-    int barW = (300 * percent) / 100;
-    fillRect(20,        statusY + 14, barW,       6, C_GREEN);
-    fillRect(20 + barW, statusY + 14, 280 - barW, 6, C_BLACK);
+    int barW = (280 * percent) / 100;
+    fillRect(20,        statusY + 13, barW,       6, C_GREEN);
+    fillRect(20 + barW, statusY + 13, 280 - barW, 6, C_BLACK);
 }
 
 
@@ -230,10 +268,12 @@ void drawProgress(int percent, size_t written, size_t total) {
 void drawHeader() {
     fillRect(0, 0, HRES, VRES, C_BLACK);
     drawLogo((HRES - LOGO_W) / 2, 4);
-    drawString(130, 19, VERSION, C_WHITE, C_BLACK);
-    drawString(80, 29, "www.alternativebits.com/esp32", C_CYAN, C_BLACK);
-    
-    drawLine(8, 42, HRES - 9, C_BLUE);
+    drawString(130, 20, VERSION, C_WHITE, C_BLACK);
+    drawString(38, 32, "by FG1998 - www.alternativebits.com/esp32", C_CYAN, C_BLACK);
+    drawString(30, 44, "Q/UP - A/DOWN - ENTER", C_WHITE,   C_BLACK);    
+    drawString(160, 44, "F1/1=Menu F2/2=Update", C_MAGENTA, C_BLACK);
+    drawLine(8, 56, HRES - 9, C_BLUE);
+
 }
 
 // ---------------------------------------------------------------------------
@@ -460,22 +500,20 @@ void loadInfoText(const char* folderPath) {
 
 
 
-
-
-
 void drawMenu(int selected, int scrollOffset) {
 
     fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-    drawString(10, MENU_Y_START, "SELECT [Q/UP - A/DOWN - ENTER]", C_WHITE,   C_BLACK);
-    drawString(220, MENU_Y_START, "F1/1=Menu/Help",                        C_MAGENTA, C_BLACK);
 
     char sc[16];
     snprintf(sc, sizeof(sc), "%d/%d", selected + 1, menuCount);
-    drawString(HRES - (int)strlen(sc) * 6 - 4, 35, sc, C_CYAN, C_BLACK);
+    drawString(HRES - (int)strlen(sc) * 6 - 4, 32, sc, C_CYAN, C_BLACK);
 
     prefs.begin("sdloader", true);
     String currentVersion = prefs.getString("version", "");
     prefs.end();
+
+    int barW = 150;
+    int barX = (HRES - barW) / 2;
 
     int visible = min(menuCount, MAX_VISIBLE);
     for (int i = 0; i < visible; i++) {
@@ -485,18 +523,26 @@ void drawMenu(int selected, int scrollOffset) {
         Color ink   = isSel ? C_BLACK : C_GREEN;
         Color paper = isSel ? C_GREEN : C_BLACK;
         bool isInstalled = (String(menuEntries[idx].version) == currentVersion);
+
         char line[42];
-        snprintf(line, sizeof(line), "%s%-24s", isInstalled ? "*" : " ", menuEntries[idx].name);
-        int y = MENU_Y_START + 12 + i * MENU_LINE_H;
-        fillRect(8, y, 150, MENU_LINE_H, paper);   // x=8, largura=150 (~metade da tela)
-        cv.setPenColor(C_WHITE);
-        cv.setBrushColor(C_BLACK);
+        snprintf(line, sizeof(line), "%s%s", isInstalled ? "*" : "", menuEntries[idx].name);
+
+        int y = MENU_Y_START + i * MENU_LINE_H;
+        fillRect(barX, y, barW, MENU_LINE_H, paper);
+
+        // Centraliza o texto dentro da barra
+        int textW = strlen(line) * 6;
+        int textX = barX + (barW - textW) / 2;
+
         cv.selectFont(&fabgl::FONT_6x12);
-        drawString(8, y, line, ink, paper);
+        drawString(textX, y, line, ink, paper);
     }
-
-
 }
+
+
+
+
+#include "updater.h"
 
 int runMenu() {
 
@@ -566,6 +612,14 @@ int runMenu() {
             drawMenu(selected, scrollOffset);
             continue;
         }
+        if (key == KEY_F2 || key == KEY_2) {
+            runUpdater();
+            while (ps2_get_key() == 0);  // espera tecla
+            statusLine("Status", "Press any key to return", C_YELLOW);
+            drawMenu(selected, scrollOffset);
+            statusY = statusY_original;
+            continue;
+        }
         if ((key == KEY_UP || key == KEY_Q) && selected > 0) {
             selected--;
             if (selected < scrollOffset) scrollOffset--;
@@ -589,6 +643,13 @@ int runMenu() {
 // Setup
 // ---------------------------------------------------------------------------
 void setup() {
+
+    disableCore0WDT();
+    delay(100);
+    disableCore1WDT();
+    fabgl::BitmappedDisplayController::queueSize = 128;
+
+    
     Serial.begin(115200);
     delay(200);
 
@@ -600,22 +661,22 @@ void setup() {
     Serial.println("VGA OK");
 
     drawHeader();
-    //scrollStart();
-    delay(3000);
+   
+    delay(300);
 
     Serial.printf("Heap: %d  PSRAM: %s\n", ESP.getFreeHeap(), psramFound() ? "SIM" : "NAO");
 
     spiSD.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
     if (!SD.begin(SD_CS, spiSD)) {
-        statusLine("SD Card", "NOT FOUND", C_RED);
-        statusLine("Status", "Press any key to retry", C_YELLOW);
+        statusLine("SD Card not found", C_RED);
+        statusLine("Press any key to retry", C_YELLOW);
         ps2_init();
         while (ps2_get_key() == 0);
         ESP.restart();
         return;
     }
 
-    statusLine("SD Card", "FOUND", C_GREEN);
+    statusLine("SD Card FOUND", C_GREEN);
 
 
 
@@ -642,12 +703,29 @@ void setup() {
     }
 
     // --- Modo 2: menu ---
-    statusLine("Status", "Reading", C_YELLOW);
+    statusLine("Scanning folders...", C_YELLOW);
     scanFolders();
 
     if (menuCount == 0) {
         statusLine("Status", "No emulators found!", C_RED);
-        delay(5000); ESP.restart(); return;
+        
+        ps2_init();
+        delay(500);
+        ps2_head = ps2_tail = 0;
+        ps2_bit = 0; ps2_data = 0;
+
+        while (true) {
+            if (ps2_head == ps2_tail) continue;
+            uint8_t key = ps2_get_key();
+            if (key == 0) continue;
+            if (key == KEY_F1 || key == KEY_1) {
+                showMaintenanceMenu();
+                fillRect(0, 0, HRES, VRES, C_BLACK);
+                drawHeader();
+            } else if (key == KEY_F2 || key == KEY_2) {
+                runUpdater();
+            }
+        }
     }
 
     int selected = runMenu();
@@ -675,6 +753,7 @@ void setup() {
 
 
 
+    
     
 }
 
