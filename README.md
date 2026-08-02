@@ -190,7 +190,7 @@ Look for offsets returning `0xE9`. The **first** is the bootloader (skip). The *
 
 ## 4. Known issues
 
-* ⚠️ **PS2 Keyboard** — inconsistent behavior. If keyboard doesn't respond after boot, power off and on again.
+* ⚠️ **PS2 Keyboard** — improved in 0.6.0a (ISR critical section + no buffer wipe). If it still misbehaves after boot, power off and on again.
 
 * ⚠️ **PocketTRS** — not compatible yet due to WiFi conflicts and partition differences.
 
@@ -202,7 +202,7 @@ Look for offsets returning `0xE9`. The **first** is the bootloader (skip). The *
 
 ## 5. How to adapt any project to work with the bootloader
 
-The bootloader always flashes firmware to the `ota_0` partition (`0xA0000`). For the app to return control to the bootloader on the next power-up, it must erase the `otadata` partition during startup — otherwise the ESP32 will boot directly into the app, bypassing the bootloader.
+The bootloader always flashes firmware to the `ota_0` partition (`0x130000`). For the app to return control to the bootloader on the next power-up, it must erase the `otadata` partition during startup — otherwise the ESP32 will boot directly into the app, bypassing the bootloader.
 
 Add the following block at the **very beginning of `setup()`**, before anything else:
 
@@ -228,7 +228,7 @@ Once this is done:
 3. Create a `version.txt` file with the version name (e.g. `MyApp_1.0`)
 4. The bootloader will flash and boot it automatically
 
-> **Note:** The maximum firmware size is **3392KB** (`0x350000`). If your firmware exceeds this limit, it won't fit in the `ota_0` partition.
+> **Note:** The maximum firmware size is **2816KB** (`0x2C0000`). If your firmware exceeds this limit, it won't fit in the `ota_0` partition.
 
 > **ESP-IDF projects** (`framework = espidf`) may not need this modification, depending on whether the project manages `otadata` internally.
 
@@ -242,8 +242,8 @@ This is the partition layout used by the bootloader. It is provided here for ref
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x5000
 otadata,  data, ota,     0xe000,   0x2000
-factory,  app,  factory, 0x10000,  0x90000
-ota_0,    app,  ota_0,   0xA0000,  0x350000
+factory,  app,  factory, 0x10000,  0x120000
+ota_0,    app,  ota_0,   0x130000, 0x2C0000
 spiffs,   data, spiffs,  0x3F0000, 0x10000
 ```
 
@@ -251,9 +251,11 @@ spiffs,   data, spiffs,  0x3F0000, 0x10000
 |-----------|------------|---------|------------------------------------|
 | nvs       | 0x9000     | 20KB    | Non-volatile storage               |
 | otadata   | 0xE000     | 8KB     | OTA boot selector                  |
-| factory   | 0x10000    | 576KB   | The bootloader itself              |
-| ota_0     | 0xA0000    | 3392KB  | Where emulator firmwares are stored|
+| factory   | 0x10000    | 1152KB  | The bootloader itself              |
+| ota_0     | 0x130000   | 2816KB  | Where emulator firmwares are stored|
 | spiffs    | 0x3F0000   | 64KB    | Reserved                           |
+
+> This table matches `partitions.csv`. Older docs that mentioned factory `0x90000` / ota_0 `@0xA0000` / 3392KB are outdated.
 
 ## 7. ULTRA SUPER BETA
 

@@ -1,3 +1,14 @@
+Version 0.6.0a
+- Full change report: docs/RELATORIO_ALTERACOES.md
+- VGA UI: countdown/idle/statusY; logo drawBitmap; queueSize 512; incremental menu
+- SD: auto-detect MISO GPIO2/35 (eFuse + fallback, from ESPectrum)
+- OTA: SD->PSRAM->flash; progress ~10%; VGA on (no flicker validated); suspend optional (=1)
+- WiFi download (final): DL task core0 + UI core1; live % bar; no flicker
+- PS/2: portMUX; no ring wipe after each key
+- shutdownForReboot(); README partitions aligned to partitions.csv
+- Removed dead code (wifiInit, info panel stubs, etc.)
+
+
 Version 0.3.2a
 - Bootloader Speed Up (thanks to Leo Manes)
 - Add new keys to help ZX Spectrum/TK90X keyboard users on ROBG_RG (Thanks to Rodolfo Guerra)
