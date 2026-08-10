@@ -152,7 +152,9 @@ void runExtractFirmware() {
         }
 
         bool ok = extractOne(fileNameCopy, matchedPrefix);
+        statusY+=20;
         statusLine(matchedPrefix, ok ? "Extracted OK!" : "FAILED!", ok ? C_GREEN : C_RED);
+       
     }
     root.close();
 

@@ -158,6 +158,7 @@ void updateMenuSelection(int oldSelected, int newSelected,
         drawMenuRow(newSelected, newSelected, newScroll, currentPath);
     }
     drawMenuCounter(newSelected);
+    cv.waitCompletion(false);  // drain FabGL queue before next key; prevents lockup on fast nav
 }
 
 void drawMaintenanceScreen() {
