@@ -1,12 +1,15 @@
 #pragma once
+// ===========================================================================
+// updater.h - WiFi/HTTP emulator downloader
+// ===========================================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <SD.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "bootloader.h"   // config, globals, render (drawProgress/statusLine/...)
 
 #define EMUL_JSON_URL "https://alternativebits.com/esp32/emulators.php"
 #define WIFICONFIG_FILE "/wificonfig.rc"
@@ -433,7 +436,7 @@ void runUpdater() {
     fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START, C_BLACK);
     statusY = MENU_Y_START;
     statusLine("UPDATE / INSTALL EMULATORS", C_YELLOW);
-    statusLine("Test: DL@core0 UI@core1", C_CYAN);
+    //statusLine("Test: DL@core0 UI@core1", C_CYAN);
 
     statusLine("WiFi Connecting...", C_YELLOW);
     if (!updaterWifiConnect()) {
@@ -508,6 +511,7 @@ void runUpdater() {
             statusY = MENU_Y_START + 12;
         }
 
+
         char question[80];
         if (isNew)
             snprintf(question, sizeof(question), "Install %s v%s? Y/N", name, version);
@@ -515,6 +519,9 @@ void runUpdater() {
             snprintf(question, sizeof(question), "Update %s %s->%s? Y/N", name, localVersion.c_str(), version);
 
         statusLine(question, C_YELLOW);
+
+        // LIMPEZA DO BUFFER INSERIDA AQUI
+        ps2_flush();
 
         uint8_t key = 0;
         while (key == 0) key = ps2_get_key();
@@ -524,6 +531,7 @@ void runUpdater() {
             statusLine("Skip", name, C_WHITE);
             continue;
         }
+
 
         statusLine("Starting download...", C_CYAN);
         if (!folderExists) SD.mkdir(folderPath);
@@ -550,7 +558,11 @@ void runUpdater() {
             drawString(10, updaterDlLabelY, updaterDlLabel, C_CYAN, C_BLACK);
             statusY = updaterDlBarY;
 
-            if (!updaterDownloadFile(url, destPath)) allOk = false;
+            // Remover o " " do URL para evitar problemas de download
+            String urlEncoded = String(url);
+            urlEncoded.replace(" ", "%20");
+            if (!updaterDownloadFile(urlEncoded.c_str(), destPath)) allOk = false;
+            
 
             statusY = updaterDlLabelY;
             updaterDlLabel[0] = '\0';
@@ -561,7 +573,6 @@ void runUpdater() {
     }
 
     updaterRadioRestore();
-    statusLine("Done", "Press any key to return", C_GREEN);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 }

@@ -1,82 +1,35 @@
-#include <Arduino.h>
-#include <SD.h>
-#include <Preferences.h>
-#include <fabgl.h>
-#include "esp_ota_ops.h"
-#include "esp_partition.h"
-#include "nvs_flash.h"
-#include "esp_efuse.h"
-#include "logo.h"
+// ===========================================================================
+// main.cpp - ESP32 SD Bootloader / Multiloader
+// All modules pulled in through a single include below.
+// ===========================================================================
+#include "bootloader.h"
 
-// SD pinout — same scheme as ESPectrum FileUtils / hardpins.h
-// CLK/MOSI/CS are shared; only MISO differs by board/chip package
-#define SD_CLK   14
-#define SD_MOSI  12
-#define SD_CS    13
-#define SD_MISO_LILYGO  2   // TTGO VGA32 / LILYGO / ESP32PICOD4 / D0WDQ6
-#define SD_MISO_OLIMEX  35  // Olimex SBC-FABGL / WROVER (ESP32D0WDQ5)
-
-#define FIRMWARE_FILE  "/firmware.bin"
-#define VERSION_FILE   "/version.txt"
-
-#define PS2_DAT 32
-#define PS2_CLK 33
-
-#define KEY_UP      0x75
-#define KEY_Q       0x15
-#define KEY_DOWN    0x72
-#define KEY_A_NAV   0x1C
-#define KEY_ENTER   0x5A
-#define KEY_F1      0x05
-#define KEY_1       0x16
-#define KEY_N_KEY   0x31
-#define KEY_A_KEY   0x1C
-#define KEY_O_KEY   0x44
-#define KEY_R_KEY   0x2D
-#define KEY_ESC     0x76
-#define KEY_SPACE   0x29
-#define KEY_F2      0x06
-#define KEY_2       0x1E
-
-#define SPEAKER_PIN 25
-#define VERSION "ver 0.6.0a"
-
-// Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.
-// Set -DOTA_SUSPEND_VGA_DURING_FLASH=1 if flash stage still sparkles.
-#ifndef OTA_SUSPEND_VGA_DURING_FLASH
-#define OTA_SUSPEND_VGA_DURING_FLASH 0
-#endif
-
-#define HRES  320
-#define VRES  240
-
-#define MENU_LINE_H   12
-#define MAX_VISIBLE   13
-#define MENU_Y_START  68
-#define MAX_ENTRIES   35
-
-// statusY tracks the next status line; reset to menu area (not header)
+// --------------------------------------------------------------------------
+// Global state definitions (declared extern in bootloader.h)
+// --------------------------------------------------------------------------
 int statusY_original = MENU_Y_START;
 int statusY = MENU_Y_START;
-
 const uint32_t AUTOBOOT_MS = 10000;
 
-// ---------------------------------------------------------------------------
-// FabGL globals
-// ---------------------------------------------------------------------------
 fabgl::VGA16Controller DisplayController;
 fabgl::Canvas          cv(&DisplayController);
 
-// ---------------------------------------------------------------------------
-// PS2 por interrupção (ring buffer protegido ISR ↔ main)
-// ---------------------------------------------------------------------------
-#define PS2_BUFFER_SIZE 64
 volatile uint8_t ps2_buffer[PS2_BUFFER_SIZE];
 volatile int ps2_head = 0, ps2_tail = 0;
 volatile int ps2_bit = 0;
 volatile uint8_t ps2_data = 0;
 portMUX_TYPE ps2Mux = portMUX_INITIALIZER_UNLOCKED;
 
+SPIClass spiSD(HSPI);
+Preferences prefs;
+int sdMisoActive = SD_MISO_LILYGO;
+
+MenuEntry menuEntries[MAX_ENTRIES];
+int menuCount = 0;
+
+// ===========================================================================
+// PS2 implementation
+// ===========================================================================
 void IRAM_ATTR ps2_isr() {
     int dat = digitalRead(PS2_DAT);
     ps2_bit++;
@@ -167,82 +120,7 @@ void ps2_shutdown() {
 
 // ---------------------------------------------------------------------------
 // Cores FabGL
-// ---------------------------------------------------------------------------
-#define C_BLACK   Color::Black
-#define C_RED     Color::Red
-#define C_GREEN   Color::BrightGreen
-#define C_YELLOW  Color::Yellow
-#define C_BLUE    Color::Blue
-#define C_MAGENTA Color::Magenta
-#define C_CYAN    Color::Cyan
-#define C_WHITE   Color::White
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-void drawString(int x, int y, const char* str, Color ink, Color paper) {
-    cv.selectFont(&fabgl::FONT_6x12);
-    cv.setPenColor(ink);
-    cv.setBrushColor(paper);
-    cv.setGlyphOptions(GlyphOptions().FillBackground(true));
-    cv.drawText( x, y, str);
-}
-
-void fillRect(int x, int y, int w, int h, Color color) {
-    cv.setBrushColor(color);
-    cv.fillRectangle(x, y, x + w - 1, y + h - 1);
-}
-
-void drawLine(int x1, int y1, int x2, Color color) {
-    cv.setPenColor(color);
-    cv.drawLine(x1, y1, x2, y1);
-}
-
-// Logo: logo_data is 1 byte/px packed --RRGGBB; FabGL Bitmap wants RGBA2222 = AABBGGRR
-static uint8_t logo_rgba[LOGO_W * LOGO_H];
-static fabgl::Bitmap* logoBitmap = nullptr;
-
-void ensureLogoBitmap() {
-    if (logoBitmap) return;
-    for (int i = 0; i < LOGO_W * LOGO_H; i++) {
-        uint8_t c = logo_data[i];
-        uint8_t r = (c >> 4) & 3;
-        uint8_t g = (c >> 2) & 3;
-        uint8_t b = c & 3;
-        logo_rgba[i] = 0xC0 | (b << 4) | (g << 2) | r;  // AA=3 (opaque)
-    }
-    logoBitmap = new fabgl::Bitmap(LOGO_W, LOGO_H, logo_rgba,
-                                   fabgl::PixelFormat::RGBA2222, false);
-}
-
-void drawLogo(int x, int y) {
-    ensureLogoBitmap();
-    cv.drawBitmap(x, y, logoBitmap);
-}
-
-// ---------------------------------------------------------------------------
-// Speaker
-// ---------------------------------------------------------------------------
-void speakerClick() {
-    for (int i = 0; i < 50; i++) {
-        dacWrite(SPEAKER_PIN, 40);
-        delayMicroseconds(500);
-        dacWrite(SPEAKER_PIN, 0);
-        delayMicroseconds(500);
-    }
-    dacWrite(SPEAKER_PIN, 20);
-}
-
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
-SPIClass spiSD(HSPI);
-Preferences prefs;
-
-// Active MISO after auto-detect (for status/logging)
-int sdMisoActive = SD_MISO_LILYGO;
-
-// Try one SD pin set (Arduino SD + HSPI). Cleans previous bus on failure.
 bool tryMountSD(int miso) {
     SD.end();
     spiSD.end();
@@ -302,64 +180,22 @@ bool initSDAuto() {
     return false;
 }
 
-
-
-void statusLine(const char* label, const char* value, Color color) {
-    char buf[64];
-    if (label[0] == '\0')
-        snprintf(buf, sizeof(buf), "%s", value);
-    else
-        snprintf(buf, sizeof(buf), "%s %s", label, value);
-
-    drawString(10, statusY, buf, color, C_BLACK);
-    Serial.printf("[%s] %s\n", label, value);
-    statusY += 12;
-}
-
-void statusLine(const char* value, Color color) {
-    statusLine("", value, color);
-}
-
-void drawProgress(int percent, size_t written, size_t total, const char* action = "Flashing") {
-    char buf[50];
-    snprintf(buf, sizeof(buf), "%s %3d%%  (%dKB/%dKB)  ",
-             action, percent, (int)(written/1024), (int)(total/1024));
-    drawString(20, statusY, buf, C_YELLOW, C_BLACK);
-    int barW = (280 * percent) / 100;
-    fillRect(20,        statusY + 13, barW,       6, C_GREEN);
-    fillRect(20 + barW, statusY + 13, 280 - barW, 6, C_BLACK);
-}
-
-
-// ---------------------------------------------------------------------------
-// Header
-// ---------------------------------------------------------------------------
-void drawHeader() {
-    fillRect(0, 0, HRES, VRES, C_BLACK);
-    drawLogo((HRES - LOGO_W) / 2, 4);
-    drawString(130, 20, VERSION, C_WHITE, C_BLACK);
-    drawString(38, 32, "by FG1998 - www.alternativebits.com/esp32", C_CYAN, C_BLACK);
-    drawString(30, 44, "Q/UP - A/DOWN - ENTER", C_WHITE,   C_BLACK);    
-    drawString(160, 44, "F1/1=Menu F2/2=Update", C_MAGENTA, C_BLACK);
-    drawLine(8, 56, HRES - 9, C_BLUE);
-
-}
-
-// ---------------------------------------------------------------------------
-// NVS
-// ---------------------------------------------------------------------------
-bool needsUpdate(const char* versionOnSD) {
+bool needsUpdate(const char* pathOnSD, const char* versionOnSD) {
     prefs.begin("sdloader", true);
-    String stored = prefs.getString("version", "");
+    String storedPath = prefs.getString("path", "");
+    String storedVer  = prefs.getString("version", "");
     prefs.end();
-    Serial.printf("NVS: '%s'  SD: '%s'\n", stored.c_str(), versionOnSD);
-    return (stored != String(versionOnSD));
+    Serial.printf("NVS path:'%s' ver:'%s'  SD path:'%s' ver:'%s'\n",
+                  storedPath.c_str(), storedVer.c_str(), pathOnSD, versionOnSD);
+    // Precisa gravar se mudou de emulador (path) OU se a versao do mesmo subiu
+    return (storedPath != String(pathOnSD)) || (storedVer != String(versionOnSD));
 }
 
-void saveVersion(const char* version) {
+void saveVersion(const char* path, const char* version) {
     prefs.begin("sdloader", false);
+    prefs.putString("path", path);
     size_t written = prefs.putString("version", version);
-    if (written == 0) { prefs.clear(); prefs.putString("version", version); }
+    if (written == 0) { prefs.clear(); prefs.putString("path", path); prefs.putString("version", version); }
     prefs.end();
 }
 
@@ -420,7 +256,7 @@ static void otaProgressMaybe(int& lastPct, size_t done, size_t total, const char
     drawProgress(pct, done, total, action);
 }
 
-bool doOTA(const char* binPath, const char* versionName) {
+bool doOTA(const char* binPath, const char* folderPath, const char* versionName) {
     File bin = SD.open(binPath);
     if (!bin) { statusLine("firmware.bin", "OPEN ERROR", C_RED); return false; }
 
@@ -604,7 +440,7 @@ bool doOTA(const char* binPath, const char* versionName) {
     }
 #endif
 
-    saveVersion(versionName);
+    saveVersion(folderPath, versionName);
     statusY += 20;
     statusLine("Status", "FLASHED OK!", C_GREEN);
     return true;
@@ -612,79 +448,6 @@ bool doOTA(const char* binPath, const char* versionName) {
 
 // ---------------------------------------------------------------------------
 // Menu
-// ---------------------------------------------------------------------------
-struct MenuEntry {
-    char name[64];
-    char version[64];
-    char path[128];
-};
-
-MenuEntry menuEntries[MAX_ENTRIES];
-int menuCount = 0;
-
-void showMaintenanceMenu() {
-fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-drawString(10, MENU_Y_START + 14,      "*** MENU ***",      C_YELLOW, C_BLACK);
-drawString(10, MENU_Y_START + 28, "N - Clear Bootloader NVS", C_WHITE,  C_BLACK);
-drawString(10, MENU_Y_START + 42, "A - Clear ALL NVS",        C_WHITE,  C_BLACK);
-drawString(10, MENU_Y_START + 56, "O - Clear Otadata",        C_WHITE,  C_BLACK);
-drawString(10, MENU_Y_START + 70, "R - Reset ESP32",          C_WHITE,  C_BLACK);
-drawString(10, MENU_Y_START + 84, "ESC/SPACE - Cancel",       C_CYAN,   C_BLACK);
-
-    while (true) {
-        uint8_t key = ps2_get_key();
-        if (key == 0) continue;
-
-        const char* msg  = nullptr;
-        const char* done = nullptr;
-
-        if      (key == KEY_N_KEY) { msg = "Clear Bootloader NVS?"; done = "Bootloader NVS cleared!"; }
-        else if (key == KEY_A_KEY) { msg = "Clear ALL NVS?";         done = "ALL NVS cleared!"; }
-        else if (key == KEY_O_KEY) { msg = "Clear Otadata?";         done = "Otadata cleared!"; }
-        else if (key == KEY_R_KEY) { msg = "Reset ESP32?";           done = "Resetting..."; }
-        else if (key == KEY_ESC || key == KEY_SPACE) { break; }
-
-        if (!msg) continue;
-
-        fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-        drawString(10, MENU_Y_START,      msg,                         C_YELLOW, C_BLACK);
-        drawString(10, MENU_Y_START + 14, "Y to confirm, N to cancel", C_WHITE,  C_BLACK);
-
-        uint8_t conf = 0;
-        while (conf == 0) conf = ps2_get_key();
-
-        if (conf != 0x35) {
-            // N — volta pro menu
-            fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-            drawString(10, MENU_Y_START,      "*** MAINTENANCE ***",      C_YELLOW, C_BLACK);
-            drawString(10, MENU_Y_START + 14, "N - Clear Bootloader NVS", C_WHITE,  C_BLACK);
-            drawString(10, MENU_Y_START + 24, "A - Clear ALL NVS",        C_WHITE,  C_BLACK);
-            drawString(10, MENU_Y_START + 34, "O - Clear Otadata",        C_WHITE,  C_BLACK);
-            drawString(10, MENU_Y_START + 44, "R - Reset ESP32",          C_WHITE,  C_BLACK);
-            drawString(10, MENU_Y_START + 58, "ESC/SPACE - Cancel",       C_CYAN,   C_BLACK);
-            continue;
-        }
-
-        if      (key == KEY_N_KEY) { prefs.begin("sdloader", false); prefs.clear(); prefs.end(); }
-        else if (key == KEY_A_KEY) { nvs_flash_erase(); nvs_flash_init(); }
-        else if (key == KEY_O_KEY) {
-            const esp_partition_t* otadata = esp_partition_find_first(
-                ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
-            if (otadata) esp_partition_erase_range(otadata, 0, otadata->size);
-        }
-        else if (key == KEY_R_KEY) {
-            shutdownForReboot();
-            ESP.restart();
-        }
-
-        fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-        drawString(10, MENU_Y_START,      done,                        C_GREEN, C_BLACK);
-        drawString(10, MENU_Y_START + 14, "Press any key to reboot",   C_WHITE, C_BLACK);
-        while (ps2_get_key() == 0);
-        shutdownForReboot();
-        ESP.restart();
-    }
-}
 
 void scanFolders() {
     menuCount = 0;
@@ -719,180 +482,6 @@ void scanFolders() {
     root.close();
 }
 
-static const int MENU_BAR_W = 150;
-static const int MENU_BAR_X = (HRES - MENU_BAR_W) / 2;
-static const int MENU_COUNTER_CLEAR_W = 8 * 6;  // room for "99/99"
-
-void drawMenuCounter(int selected) {
-    fillRect(HRES - MENU_COUNTER_CLEAR_W - 4, 32, MENU_COUNTER_CLEAR_W, MENU_LINE_H, C_BLACK);
-    char sc[16];
-    snprintf(sc, sizeof(sc), "%d/%d", selected + 1, menuCount);
-    drawString(HRES - (int)strlen(sc) * 6 - 4, 32, sc, C_CYAN, C_BLACK);
-}
-
-void drawMenuRow(int idx, int selected, int scrollOffset, const String& currentVersion) {
-    int i = idx - scrollOffset;
-    if (i < 0 || i >= MAX_VISIBLE || idx < 0 || idx >= menuCount) return;
-
-    bool isSel = (idx == selected);
-    Color ink   = isSel ? C_BLACK : C_GREEN;
-    Color paper = isSel ? C_GREEN : C_BLACK;
-    bool isInstalled = (String(menuEntries[idx].version) == currentVersion);
-
-    char line[42];
-    snprintf(line, sizeof(line), "%s%s", isInstalled ? "*" : "", menuEntries[idx].name);
-
-    int y = MENU_Y_START + i * MENU_LINE_H;
-    fillRect(MENU_BAR_X, y, MENU_BAR_W, MENU_LINE_H, paper);
-
-    int textW = (int)strlen(line) * 6;
-    int textX = MENU_BAR_X + (MENU_BAR_W - textW) / 2;
-    cv.selectFont(&fabgl::FONT_6x12);
-    drawString(textX, y, line, ink, paper);
-}
-
-void drawMenu(int selected, int scrollOffset, const String& currentVersion) {
-    fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-    drawMenuCounter(selected);
-
-    int visible = min(menuCount, MAX_VISIBLE);
-    for (int i = 0; i < visible; i++) {
-        int idx = i + scrollOffset;
-        if (idx >= menuCount) break;
-        drawMenuRow(idx, selected, scrollOffset, currentVersion);
-    }
-}
-
-// Incremental update: only old/new rows when scroll unchanged; full redraw on scroll
-void updateMenuSelection(int oldSelected, int newSelected,
-                         int oldScroll, int newScroll,
-                         const String& currentVersion) {
-    if (oldScroll != newScroll) {
-        drawMenu(newSelected, newScroll, currentVersion);
-        return;
-    }
-    if (oldSelected != newSelected) {
-        drawMenuRow(oldSelected, newSelected, newScroll, currentVersion);
-        drawMenuRow(newSelected, newSelected, newScroll, currentVersion);
-    }
-    drawMenuCounter(newSelected);
-}
-
-
-
-
-#include "updater.h"
-
-int runMenu() {
-
-    cv.setPenColor(C_WHITE);
-    cv.setBrushColor(C_BLACK);
-    cv.selectFont(&fabgl::FONT_6x12);
-
-    if (menuCount == 0) return -1;
-
-    prefs.begin("sdloader", true);
-    String currentVersion = prefs.getString("version", "");
-    prefs.end();
-
-    int selected = 0;
-    for (int i = 0; i < menuCount; i++) {
-        if (String(menuEntries[i].version) == currentVersion) { selected = i; break; }
-    }
-
-    int scrollOffset = 0;
-    if (selected >= MAX_VISIBLE) scrollOffset = selected - MAX_VISIBLE + 1;
-
-    ps2_init();
-    delay(500);
-    ps2_flush();  // drop noise from attach
-
-    drawMenu(selected, scrollOffset, currentVersion);
-
-    bool hasInstalled = (currentVersion.length() > 0);
-    uint32_t autobootStart = millis();
-    int lastSecsLeft = -1;
-    // FONT_6x12: worst case "10s" = 3 chars; clear a 4-char slot to avoid ghosts
-    const int countdownClearW = 4 * 6;
-    const int countdownY = MENU_Y_START - 20;
-    const int countdownClearX = HRES - countdownClearW - 4;
-
-    while (true) {
-
-        if (hasInstalled) {
-            uint32_t elapsed = millis() - autobootStart;
-            if (elapsed >= AUTOBOOT_MS) return selected;
-            int secsLeft = (AUTOBOOT_MS - elapsed) / 1000 + 1;
-            // Only redraw when the second changes — avoids flooding FabGL queue
-            if (secsLeft != lastSecsLeft) {
-                lastSecsLeft = secsLeft;
-                char countdown[16];
-                snprintf(countdown, sizeof(countdown), "%ds", secsLeft);
-                int textW = (int)strlen(countdown) * 6;
-                int textX = HRES - textW - 4;
-                fillRect(countdownClearX, countdownY, countdownClearW, MENU_LINE_H, C_BLACK);
-                drawString(textX, countdownY, countdown, C_YELLOW, C_BLACK);
-            }
-        }
-
-        if (!ps2_available()) {
-            delay(1);
-            continue;
-        }
-
-        uint8_t key = ps2_get_key();
-        if (key == 0) continue;
-        // Do not wipe the ring here — that raced the ISR and dropped make codes
-
-        if (hasInstalled) {
-            hasInstalled = false;
-            fillRect(countdownClearX, countdownY, countdownClearW, MENU_LINE_H, C_BLACK);
-        }
-
-        speakerClick();
-        Serial.printf("Key: 0x%02X\n", key);
-
-        if (key == KEY_F1 || key == KEY_1) {
-            showMaintenanceMenu();
-            ps2_flush();
-            drawMenu(selected, scrollOffset, currentVersion);
-            continue;
-        }
-        if (key == KEY_F2 || key == KEY_2) {
-            runUpdater();
-            ps2_flush();
-            statusLine("Status", "Press any key to return", C_YELLOW);
-            while (ps2_get_key() == 0);
-            drawMenu(selected, scrollOffset, currentVersion);
-            statusY = statusY_original;
-            continue;
-        }
-        if ((key == KEY_UP || key == KEY_Q) && selected > 0) {
-            int oldSelected = selected;
-            int oldScroll = scrollOffset;
-            selected--;
-            if (selected < scrollOffset) scrollOffset--;
-            updateMenuSelection(oldSelected, selected, oldScroll, scrollOffset, currentVersion);
-        } else if ((key == KEY_DOWN || key == KEY_A_NAV) && selected < menuCount - 1) {
-            int oldSelected = selected;
-            int oldScroll = scrollOffset;
-            selected++;
-            if (selected >= scrollOffset + MAX_VISIBLE) scrollOffset++;
-            updateMenuSelection(oldSelected, selected, oldScroll, scrollOffset, currentVersion);
-        } else if (key == KEY_ENTER) {
-            return selected;
-        }
-    }
-}
-
-
-
-
-
-
-// ---------------------------------------------------------------------------
-// Setup
-// ---------------------------------------------------------------------------
 void setup() {
 
     disableCore0WDT();
@@ -945,12 +534,12 @@ void setup() {
             vf.close();
         }
         statusLine("version.txt", versionName, C_CYAN);
-        if (!needsUpdate(versionName)) {
+        if (!needsUpdate("/", versionName)) {
             statusLine("Status", "Firmware OK - Starting...", C_GREEN);
             delay(1000); SD.end(); bootEmulatorDirect(); return;
         }
         statusLine("Status", "New firmware found!", C_YELLOW);
-        bool ok = doOTA(FIRMWARE_FILE, versionName);
+        bool ok = doOTA(FIRMWARE_FILE, "/", versionName);
         SD.end();
         if (ok) { statusLine("Status", "Restarting in 3s...", C_GREEN); delay(3000); bootEmulator(); }
         else { statusLine("Status", "ERROR! Press RESET", C_RED); while(true) delay(1000); }
@@ -1002,14 +591,15 @@ void setup() {
     char binPath[140];
     snprintf(binPath, sizeof(binPath), "%s/firmware.bin", menuEntries[selected].path);
     const char* versionName = menuEntries[selected].version;
+    const char* folderPath  = menuEntries[selected].path;
 
-    if (!needsUpdate(versionName)) {
+    if (!needsUpdate(folderPath, versionName)) {
         statusLine("Status", "Firmware OK - Starting...", C_GREEN);
         delay(1000); SD.end(); bootEmulatorDirect(); return;
     }
 
     statusLine("Status", "New firmware found!", C_YELLOW);
-    bool ok = doOTA(binPath, versionName);
+    bool ok = doOTA(binPath, folderPath, versionName);
     SD.end();
 
     if (ok) { statusLine("Status", "Restarting in 3s...", C_GREEN); delay(3000); bootEmulator(); }
