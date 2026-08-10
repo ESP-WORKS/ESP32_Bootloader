@@ -31,6 +31,18 @@ int menuCount = 0;
 // PS2 implementation
 // ===========================================================================
 void IRAM_ATTR ps2_isr() {
+    // Resync by timing: PS/2 bits arrive ~60-120us apart. A gap longer than
+    // ~250us means a clock pulse was lost or a new frame is starting, so we
+    // restart the bit counter. Without this, one missed clock desyncs the
+    // frame forever and every scancode comes out garbled (e.g. 0xC0 / 0xEA).
+    static uint32_t lastEdgeUs = 0;
+    uint32_t nowUs = micros();
+    if ((uint32_t)(nowUs - lastEdgeUs) > 250) {
+        ps2_bit = 0;
+        ps2_data = 0;
+    }
+    lastEdgeUs = nowUs;
+
     int dat = digitalRead(PS2_DAT);
     ps2_bit++;
     if (ps2_bit >= 2 && ps2_bit <= 9) {
@@ -86,22 +98,36 @@ void ps2_init() {
     attachInterrupt(digitalPinToInterrupt(PS2_CLK), ps2_isr, FALLING);
 }
 
+// Waits up to timeoutMs for the next byte in a multi-byte sequence.
+// Returns true if a byte became available (does NOT pop it), false on timeout.
+static bool ps2_wait_next(uint32_t timeoutMs) {
+    uint32_t start = millis();
+    while (!ps2_available()) {
+        if (millis() - start >= timeoutMs) return false;  // second byte never arrived
+        delay(1);
+    }
+    return true;
+}
+
 // Returns make scancode; 0 = break / ignore. Does not wipe the ring after each key.
+// Multi-byte tails (0xF0 break, 0xE0 extended) use a bounded wait so a lost or
+// delayed second byte can never lock the menu forever.
 uint8_t ps2_get_key() {
+    const uint32_t TAIL_TIMEOUT_MS = 20;  // enough for a valid pair, short enough to never hang
     while (true) {
-        while (!ps2_available()) delay(1);
+        while (!ps2_available()) delay(1);   // idle wait for a first byte (blocking is fine)
         uint8_t code = ps2_pop();
         if (code == 0) continue;
         if (code == 0xF0) {
-            while (!ps2_available()) delay(1);
+            if (!ps2_wait_next(TAIL_TIMEOUT_MS)) return 0;  // orphan break: drop, don't hang
             ps2_pop();  // discard released key
             return 0;
         }
         if (code == 0xE0) {
-            while (!ps2_available()) delay(1);
+            if (!ps2_wait_next(TAIL_TIMEOUT_MS)) return 0;  // orphan extended prefix: drop
             code = ps2_pop();
             if (code == 0xF0) {
-                while (!ps2_available()) delay(1);
+                if (!ps2_wait_next(TAIL_TIMEOUT_MS)) return 0;
                 ps2_pop();
                 return 0;
             }

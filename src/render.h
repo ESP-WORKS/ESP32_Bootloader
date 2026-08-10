@@ -7,12 +7,16 @@
 void runUpdater();          // defined in updater.h (included after this)
 void runExtractFirmware();  // defined in extract.h (included after this)
 
-void drawString(int x, int y, const char* str, Color ink, Color paper) {
-    cv.selectFont(&fabgl::FONT_6x12);
+
+
+
+void drawString(int x, int y, const char* str, Color ink, Color paper,
+                fabgl::FontInfo const* font = &fabgl::FONT_6x12) {
+    cv.selectFont(font);
     cv.setPenColor(ink);
     cv.setBrushColor(paper);
     cv.setGlyphOptions(GlyphOptions().FillBackground(true));
-    cv.drawText( x, y, str);
+    cv.drawText(x, y, str);
 }
 
 void fillRect(int x, int y, int w, int h, Color color) {
@@ -171,10 +175,11 @@ void drawMaintenanceScreen() {
     drawString(10, MENU_Y_START +  70, "D - Download Emulators / Update", C_WHITE,  C_BLACK);
     drawString(10, MENU_Y_START +  84, "E - Extract Firmware (Eremus)",   C_WHITE,  C_BLACK);
     drawString(10, MENU_Y_START +  98, "ESC/SPACE - Cancel",              C_CYAN,   C_BLACK);
+    
+    drawString(10, MENU_Y_START + 124, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 136, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 148, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra",         C_WHITE, C_BLACK, &fabgl::FONT_5x7);
 
-    drawString(10, MENU_Y_START + 124, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK);
-    drawString(10, MENU_Y_START + 136, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK);
-    drawString(10, MENU_Y_START + 148, "Tested by Caca Couto and Rodolfo Guerra",         C_WHITE, C_BLACK);
 }
 
 void showMaintenanceMenu() {
