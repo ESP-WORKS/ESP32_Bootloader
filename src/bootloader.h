@@ -25,8 +25,14 @@
 #define FIRMWARE_FILE  "/firmware.bin"
 #define VERSION_FILE   "/version.txt"
 
-#define PS2_DAT 32
-#define PS2_CLK 33
+// Pinos PS/2 — definidos em runtime via /bootl.rc no SD.
+// Valores padrão e configs disponíveis estão em rc.h (KBD_CONFIGS[]).
+// ps2DatPin / ps2ClkPin são as variáveis ativas; kbdConfigIdx é o índice (0-based).
+
+// Magic button para ciclar configuração de teclado em operação.
+// GPIO lido do bootl.rc (chave magicb=). Default 36.
+// GPIO36 é INPUT-ONLY — sem pull interno; requer resistor externo.
+// Fiação: botão → GND + pull-up 10k → 3V3  (idle=HIGH, pressionado=LOW).
 
 #define KEY_UP      0x75
 #define KEY_Q       0x15
@@ -47,7 +53,7 @@
 #define KEY_E_KEY   0x24
 
 #define SPEAKER_PIN 25
-#define VERSION "ver 0.6.1a"
+#define VERSION "ver 0.7.0a"
 
 // Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.
 // Set -DOTA_SUSPEND_VGA_DURING_FLASH=1 if flash stage still sparkles.
@@ -91,6 +97,10 @@ extern volatile int ps2_head, ps2_tail;
 extern volatile int ps2_bit;
 extern volatile uint8_t ps2_data;
 extern portMUX_TYPE ps2Mux;
+extern int ps2DatPin;    // pino DATA do PS/2 — definido em runtime pelo loadRC()
+extern int ps2ClkPin;    // pino CLK  do PS/2 — definido em runtime pelo loadRC()
+extern int kbdConfigIdx; // índice ativo em KBD_CONFIGS[] (0=C1, 1=C2, 2=C3)
+extern int magicBtnPin;  // pino do magic button — lido do bootl.rc (magicb=), default 36
 
 extern SPIClass spiSD;
 extern Preferences prefs;
@@ -126,6 +136,7 @@ void scanFolders();
 // --------------------------------------------------------------------------
 // UI + updater modules (order matters: render first, updater uses render)
 // --------------------------------------------------------------------------
+#include "rc.h"
 #include "render.h"
 #include "updater.h"
 #include "extract.h"

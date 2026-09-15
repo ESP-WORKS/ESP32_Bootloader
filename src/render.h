@@ -92,6 +92,19 @@ void drawProgress(int percent, size_t written, size_t total, const char* action 
 
 
 // ---------------------------------------------------------------------------
+// Badge de configuração de teclado — canto superior esquerdo (X=2, Y=2)
+// Exibe "C1", "C2" ou "C3" com fundo colorido. Chamado após qualquer troca.
+// C1=azul  C2=magenta  C3=vermelho
+// ---------------------------------------------------------------------------
+void drawKbdBadge() {
+    const int bx = 2, by = 2, bw = 14, bh = 9;
+    Color bg = (kbdConfigIdx == 0) ? C_BLUE :
+               (kbdConfigIdx == 1) ? C_MAGENTA : C_RED;
+    fillRect(bx, by, bw, bh, bg);
+    drawString(bx + 1, by, KBD_CONFIGS[kbdConfigIdx].badge, C_WHITE, bg, &fabgl::FONT_5x7);
+}
+
+// ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
 void drawHeader() {
@@ -102,7 +115,7 @@ void drawHeader() {
     drawString(30, 44, "Q/UP - A/DOWN - ENTER", C_WHITE,   C_BLACK);    
     drawString(200, 44, "F1/1=Menu/Help", C_MAGENTA, C_BLACK);
     drawLine(8, 56, HRES - 9, C_BLUE);
-
+    drawKbdBadge();
 }
 
 static const int MENU_BAR_W = 150;
@@ -290,7 +303,34 @@ int runMenu() {
     const int countdownY = MENU_Y_START - 20;
     const int countdownClearX = HRES - countdownClearW - 4;
 
+    // Magic button: debounce
+    static uint32_t lastBtnMs = 0;
+    bool lastBtnState = HIGH;
+
     while (true) {
+
+        // --- Polling magic button GPIO36 (cicla config de teclado) ---
+        bool btnNow = digitalRead(magicBtnPin);
+        if (btnNow == LOW && lastBtnState == HIGH && (millis() - lastBtnMs) > 300) {
+            lastBtnMs = millis();
+            // Cicla para próxima config
+            ps2_shutdown();
+            kbdConfigIdx = (kbdConfigIdx + 1) % KBD_CONFIG_COUNT;
+            ps2DatPin = KBD_CONFIGS[kbdConfigIdx].dat;
+            ps2ClkPin = KBD_CONFIGS[kbdConfigIdx].clk;
+            ps2_init();
+            delay(200);
+            ps2_flush();
+            Serial.printf("Magic button: trocou para %s\n", KBD_CONFIGS[kbdConfigIdx].label);
+            // Atualiza badge sem redesenhar tudo
+            drawKbdBadge();
+            // Cancela autoboot ao trocar config
+            if (hasInstalled) {
+                hasInstalled = false;
+                fillRect(countdownClearX, countdownY, countdownClearW, MENU_LINE_H, C_BLACK);
+            }
+        }
+        lastBtnState = btnNow;
 
         if (hasInstalled) {
             uint32_t elapsed = millis() - autobootStart;

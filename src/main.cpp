@@ -20,6 +20,13 @@ volatile int ps2_bit = 0;
 volatile uint8_t ps2_data = 0;
 portMUX_TYPE ps2Mux = portMUX_INITIALIZER_UNLOCKED;
 
+// Pinos PS/2 e config de teclado — definidos em runtime por loadRC() após SD montar.
+// Valores iniciais C1 (padrão) para caso o SD falhe antes do loadRC().
+int ps2DatPin    = 32;
+int ps2ClkPin    = 33;
+int kbdConfigIdx = 0;
+int magicBtnPin  = 36;  // default; sobrescrito pelo loadRC() via magicb= no bootl.rc
+
 SPIClass spiSD(HSPI);
 Preferences prefs;
 int sdMisoActive = SD_MISO_LILYGO;
@@ -43,7 +50,7 @@ void IRAM_ATTR ps2_isr() {
     }
     lastEdgeUs = nowUs;
 
-    int dat = digitalRead(PS2_DAT);
+    int dat = digitalRead(ps2DatPin);
     ps2_bit++;
     if (ps2_bit >= 2 && ps2_bit <= 9) {
         ps2_data >>= 1;
@@ -92,10 +99,10 @@ static uint8_t ps2_pop() {
 }
 
 void ps2_init() {
-    pinMode(PS2_DAT, INPUT_PULLUP);
-    pinMode(PS2_CLK, INPUT_PULLUP);
+    pinMode(ps2DatPin, INPUT_PULLUP);
+    pinMode(ps2ClkPin, INPUT_PULLUP);
     ps2_flush();
-    attachInterrupt(digitalPinToInterrupt(PS2_CLK), ps2_isr, FALLING);
+    attachInterrupt(digitalPinToInterrupt(ps2ClkPin), ps2_isr, FALLING);
 }
 
 // Waits up to timeoutMs for the next byte in a multi-byte sequence.
@@ -138,9 +145,9 @@ uint8_t ps2_get_key() {
 }
 
 void ps2_shutdown() {
-    detachInterrupt(digitalPinToInterrupt(PS2_CLK));
-    gpio_reset_pin(GPIO_NUM_32);
-    gpio_reset_pin(GPIO_NUM_33);
+    detachInterrupt(digitalPinToInterrupt(ps2ClkPin));
+    gpio_reset_pin((gpio_num_t)ps2DatPin);
+    gpio_reset_pin((gpio_num_t)ps2ClkPin);
     WRITE_PERI_REG(0x3ff48094, 0);
 }
 
@@ -548,7 +555,16 @@ void setup() {
     snprintf(sdMsg, sizeof(sdMsg), "FOUND (MISO=GPIO%d)", sdMisoActive);
     statusLine("SD Card", sdMsg, C_GREEN);
 
+    // Lê /bootl.rc e define ps2DatPin / ps2ClkPin / kbdConfigIdx
+    loadRC();
+    {
+        char kbdMsg[40];
+        snprintf(kbdMsg, sizeof(kbdMsg), "DAT=GPIO%d CLK=GPIO%d", ps2DatPin, ps2ClkPin);
+        statusLine(KBD_CONFIGS[kbdConfigIdx].badge, kbdMsg, C_CYAN);
+    }
 
+    // Configura magic button (lido do bootl.rc; GPIO36 INPUT-ONLY, pull-up externo obrigatório)
+    pinMode(magicBtnPin, INPUT);
 
     // --- Modo 1: firmware.bin + version.txt na raiz ---
     if (SD.exists(FIRMWARE_FILE) && SD.exists(VERSION_FILE)) {
@@ -562,10 +578,12 @@ void setup() {
         statusLine("version.txt", versionName, C_CYAN);
         if (!needsUpdate("/", versionName)) {
             statusLine("Status", "Firmware OK - Starting...", C_GREEN);
+            saveRC();
             delay(1000); SD.end(); bootEmulatorDirect(); return;
         }
         statusLine("Status", "New firmware found!", C_YELLOW);
         bool ok = doOTA(FIRMWARE_FILE, "/", versionName);
+        if (ok) saveRC();
         SD.end();
         if (ok) { statusLine("Status", "Restarting in 3s...", C_GREEN); delay(3000); bootEmulator(); }
         else { statusLine("Status", "ERROR! Press RESET", C_RED); while(true) delay(1000); }
@@ -621,11 +639,13 @@ void setup() {
 
     if (!needsUpdate(folderPath, versionName)) {
         statusLine("Status", "Firmware OK - Starting...", C_GREEN);
+        saveRC();
         delay(1000); SD.end(); bootEmulatorDirect(); return;
     }
 
     statusLine("Status", "New firmware found!", C_YELLOW);
     bool ok = doOTA(binPath, folderPath, versionName);
+    if (ok) saveRC();
     SD.end();
 
     if (ok) { statusLine("Status", "Restarting in 3s...", C_GREEN); delay(3000); bootEmulator(); }
