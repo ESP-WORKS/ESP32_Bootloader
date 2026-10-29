@@ -25,14 +25,8 @@
 #define FIRMWARE_FILE  "/firmware.bin"
 #define VERSION_FILE   "/version.txt"
 
-// Pinos PS/2 — definidos em runtime via /bootl.rc no SD.
-// Valores padrão e configs disponíveis estão em rc.h (KBD_CONFIGS[]).
-// ps2DatPin / ps2ClkPin são as variáveis ativas; kbdConfigIdx é o índice (0-based).
-
-// Magic button para ciclar configuração de teclado em operação.
-// GPIO lido do bootl.rc (chave magicb=). Default 36.
-// GPIO36 é INPUT-ONLY — sem pull interno; requer resistor externo.
-// Fiação: botão → GND + pull-up 10k → 3V3  (idle=HIGH, pressionado=LOW).
+#define PS2_DAT 32
+#define PS2_CLK 33
 
 #define KEY_UP      0x75
 #define KEY_Q       0x15
@@ -51,6 +45,16 @@
 #define KEY_F2      0x06
 #define KEY_2       0x1E
 #define KEY_E_KEY   0x24
+#define KEY_P_KEY   0x4D
+
+// Extended keys (prefixed 0xE0 on the wire) are returned by ps2_get_key() with bit 0x80 set.
+// Arrow up/down also come extended on most keyboards, so accept both forms.
+#define KEY_UP_EXT   (0x75 | 0x80)  // up arrow (extended)
+#define KEY_DOWN_EXT (0x72 | 0x80)  // down arrow (extended)
+#define KEY_LEFT    (0x6B | 0x80)   // left arrow  -> page up
+#define KEY_RIGHT   (0x74 | 0x80)   // right arrow -> page down
+#define KEY_PGDN    (0x7A | 0x80)   // page down
+#define KEY_PGUP    (0x7D | 0x80)   // page up
 
 #define SPEAKER_PIN 25
 #define VERSION "ver 0.8.0b"
@@ -89,7 +93,6 @@ extern int statusY_original;
 extern int statusY;
 extern const uint32_t AUTOBOOT_MS;
 
-//extern fabgl::VGA16Controller DisplayController;
 extern fabgl::VGAController DisplayController;
 extern fabgl::Canvas          cv;
 
@@ -98,14 +101,16 @@ extern volatile int ps2_head, ps2_tail;
 extern volatile int ps2_bit;
 extern volatile uint8_t ps2_data;
 extern portMUX_TYPE ps2Mux;
-extern int ps2DatPin;    // pino DATA do PS/2 — definido em runtime pelo loadRC()
-extern int ps2ClkPin;    // pino CLK  do PS/2 — definido em runtime pelo loadRC()
-extern int kbdConfigIdx; // índice ativo em KBD_CONFIGS[] (0=C1, 1=C2, 2=C3)
-extern int magicBtnPin;  // pino do magic button — lido do bootl.rc (magicb=), default 36
 
 extern SPIClass spiSD;
 extern Preferences prefs;
 extern int sdMisoActive;
+
+// Keyboard pins (runtime-configurable via bootl.rc / magic button) — defined in main.cpp
+extern int ps2DatPin;
+extern int ps2ClkPin;
+extern int kbdConfigIdx;
+extern int magicBtnPin;
 
 struct MenuEntry {
     char name[64];

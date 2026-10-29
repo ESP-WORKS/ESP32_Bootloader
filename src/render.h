@@ -162,7 +162,7 @@ void clearEmulatorImage() {
 // Draws /bootloader/<folderName>.bmp (8-bit or 24-bit uncompressed BMP, up to 180x180).
 // folderPath comes in as "/ANOTHER WORLD"; the image is "/bootloader/ANOTHER WORLD.bmp".
 // If the file is missing or not a valid BMP, nothing is drawn.
-void drawEmulatorImage(const char* folderPath) {
+bool drawEmulatorImage(const char* folderPath) {
     clearEmulatorImage();
 
     const char* name = folderPath;
@@ -171,15 +171,15 @@ void drawEmulatorImage(const char* folderPath) {
     char imgPath[200];
     snprintf(imgPath, sizeof(imgPath), "/bootloader/%s.bmp", name);
 
-    if (!SD.exists(imgPath)) return;
+    if (!SD.exists(imgPath)) return true;
 
     File f = SD.open(imgPath, FILE_READ);
-    if (!f) return;
+    if (!f) return true;
 
     uint8_t header[54];
     int rd = f.read(header, 54);
-    if (rd != 54) { f.close(); return; }
-    if (header[0] != 'B' || header[1] != 'M') { f.close(); return; }
+    if (rd != 54) { f.close(); return true; }
+    if (header[0] != 'B' || header[1] != 'M') { f.close(); return true; }
 
     uint32_t dataOffset = header[10] | (header[11] << 8) | (header[12] << 16) | (header[13] << 24);
     int32_t  w  = header[18] | (header[19] << 8) | (header[20] << 16) | (header[21] << 24);
@@ -213,13 +213,16 @@ void drawEmulatorImage(const char* folderPath) {
     // Read the whole pixel area into PSRAM in ONE SD read (seek-per-row over SPI is slow).
     uint32_t pixBytes = (uint32_t)rowSize * h;
     uint8_t* pix = (uint8_t*)ps_malloc(pixBytes);
-    if (!pix) { f.close(); return; }
+    if (!pix) { f.close(); return true; }
     f.seek(dataOffset);
     f.read(pix, pixBytes);
     f.close();
 
-    // Draw same-color horizontal runs as single lines: few primitives, fast.
+    // Draw same-color horizontal runs as single lines. Abort early if the user presses
+    // a key — navigation must never wait for the image to finish painting.
     for (int ry = 0; ry < drawH; ry++) {
+        if (ps2_available()) { free(pix); return false; }  // key arrived: stop, retry later
+
         int srcRow = topDown ? ry : (h - 1 - ry);
         uint8_t* row = pix + (uint32_t)srcRow * rowSize;
 
@@ -244,12 +247,12 @@ void drawEmulatorImage(const char* folderPath) {
     }
 
     free(pix);
+    return true;
 }
 
 void drawMenu(int selected, int scrollOffset, const String& currentPath) {
     fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START + 12, C_BLACK);
     drawMenuCounter(selected);
-    drawEmulatorImage(menuEntries[selected].path);
 
     int visible = min(menuCount, MAX_VISIBLE);
     for (int i = 0; i < visible; i++) {
@@ -270,7 +273,6 @@ void updateMenuSelection(int oldSelected, int newSelected,
     if (oldSelected != newSelected) {
         drawMenuRow(oldSelected, newSelected, newScroll, currentPath);
         drawMenuRow(newSelected, newSelected, newScroll, currentPath);
-        drawEmulatorImage(menuEntries[newSelected].path);
     }
     drawMenuCounter(newSelected);
     cv.waitCompletion(false);  // drain FabGL queue before next key; prevents lockup on fast nav
@@ -405,7 +407,20 @@ int runMenu() {
     static uint32_t lastBtnMs = 0;
     bool lastBtnState = HIGH;
 
+    // Deferred preview image: only load after navigation settles (keeps fast scroll smooth)
+    const uint32_t IMG_DELAY_MS = 120;
+    int  imgShownFor   = -1;                 // which selected index is currently drawn
+    int  imgPendingFor = selected;           // index waiting to be drawn
+    uint32_t imgPendingSince = millis();
+
     while (true) {
+
+        // Draw the deferred preview image once navigation has paused
+        if (imgPendingFor != imgShownFor &&
+            (millis() - imgPendingSince) >= IMG_DELAY_MS) {
+            if (drawEmulatorImage(menuEntries[imgPendingFor].path))
+                imgShownFor = imgPendingFor;   // only mark done if it finished (not aborted)
+        }
 
         // --- Polling magic button GPIO36 (cicla config de teclado) ---
         bool btnNow = digitalRead(magicBtnPin);
@@ -478,18 +493,42 @@ int runMenu() {
  //           statusY = statusY_original;
  //           continue;
  //       }
-        if ((key == KEY_UP || key == KEY_Q) && selected > 0) {
+        if ((key == KEY_UP || key == KEY_UP_EXT || key == KEY_Q) && selected > 0) {
             int oldSelected = selected;
             int oldScroll = scrollOffset;
             selected--;
             if (selected < scrollOffset) scrollOffset--;
             updateMenuSelection(oldSelected, selected, oldScroll, scrollOffset, currentPath);
-        } else if ((key == KEY_DOWN || key == KEY_A_NAV) && selected < menuCount - 1) {
+            imgPendingFor = selected; imgPendingSince = millis();
+        } else if ((key == KEY_DOWN || key == KEY_DOWN_EXT || key == KEY_A_NAV) && selected < menuCount - 1) {
             int oldSelected = selected;
             int oldScroll = scrollOffset;
             selected++;
             if (selected >= scrollOffset + MAX_VISIBLE) scrollOffset++;
             updateMenuSelection(oldSelected, selected, oldScroll, scrollOffset, currentPath);
+            imgPendingFor = selected; imgPendingSince = millis();
+        } else if (key == KEY_PGUP || key == KEY_LEFT || key == KEY_O_KEY) {
+            // Page up: jump back one full page (left arrow / O)
+            if (selected > 0) {
+                selected -= MAX_VISIBLE;
+                if (selected < 0) selected = 0;
+                scrollOffset = selected - (selected % MAX_VISIBLE);
+                if (scrollOffset > menuCount - MAX_VISIBLE) scrollOffset = max(0, menuCount - MAX_VISIBLE);
+                if (selected < scrollOffset) scrollOffset = selected;
+                drawMenu(selected, scrollOffset, currentPath);
+                imgPendingFor = selected; imgPendingSince = millis();
+            }
+        } else if (key == KEY_PGDN || key == KEY_RIGHT || key == KEY_P_KEY) {
+            // Page down: jump forward one full page (right arrow / P)
+            if (selected < menuCount - 1) {
+                selected += MAX_VISIBLE;
+                if (selected > menuCount - 1) selected = menuCount - 1;
+                if (selected >= scrollOffset + MAX_VISIBLE)
+                    scrollOffset = selected - MAX_VISIBLE + 1;
+                if (scrollOffset < 0) scrollOffset = 0;
+                drawMenu(selected, scrollOffset, currentPath);
+                imgPendingFor = selected; imgPendingSince = millis();
+            }
         } else if (key == KEY_ENTER) {
             return selected;
         }

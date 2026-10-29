@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FabGL Color Mapper</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1d2027; --panel2: #252932; --line: #333845;
+    --text: #e6e8ee; --muted: #8b93a5; --accent: #4fa3ff; --sel: #ffcc33;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 14px; margin: 0 12px 0 0; font-weight: 600; }
+  button, label.btn, select { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover, label.btn:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: #1f5fa8; border-color: #2c74c7; }
+  input[type=file] { display: none; }
+  .rs { display: flex; gap: 5px; align-items: center; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .rs label { display: flex; gap: 4px; align-items: center; }
+  .rs input[type=number] { width: 58px; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px; font: inherit; }
+  .rs select { padding: 4px 6px; }
+  #info { color: var(--muted); margin-left: auto; }
+  main { flex: 1; display: grid; grid-template-columns: 300px 1fr 280px; min-height: 0; }
+  aside, section { min-height: 0; overflow: auto; }
+  aside { background: var(--panel); padding: 8px; }
+  aside.left { border-right: 1px solid var(--line); }
+  aside.right { border-left: 1px solid var(--line); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    margin: 4px 4px 8px; font-weight: 600; display: flex; justify-content: space-between; }
+  .sw { width: 22px; height: 22px; border-radius: 4px; border: 1px solid #0008; flex: none; }
+  .row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px;
+    cursor: pointer; border: 1px solid transparent; }
+  .row:hover { background: var(--panel2); }
+  .row.sel { border-color: var(--sel); background: #2d2a1d; }
+  .row .hex { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .row .cnt { color: var(--muted); font-size: 11px; margin-left: auto; text-align: right; min-width: 52px; }
+  .row .arrow { color: var(--muted); }
+  .row .dn { font-size: 11px; color: var(--muted); width: 88px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .row .lock { font-size: 10px; color: var(--accent); width: 10px; }
+  #fabList { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 4px; }
+  .blkt { font-size: 11px; color: var(--muted); margin-bottom: 3px; font-family: ui-monospace, monospace; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+  .cell { aspect-ratio: 1; border-radius: 4px; border: 1px solid #0008; cursor: pointer; position: relative; }
+  .cell:hover { outline: 2px solid var(--muted); outline-offset: 1px; }
+  .cell.target { outline: 2px solid var(--sel); outline-offset: 1px; z-index: 1; }
+  .cell.used::after { content: ''; position: absolute; right: 2px; top: 2px; width: 5px; height: 5px;
+    border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px #000; }
+  #fabInfo { display: flex; gap: 8px; align-items: center; margin: 12px 4px 0; min-height: 48px; font-size: 12px; }
+  #fabInfo .sw { width: 36px; height: 36px; }
+  section { display: flex; flex-direction: column; }
+  .toolbar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line);
+    background: var(--panel); flex-wrap: wrap; }
+  .toolbar label { display: flex; gap: 5px; align-items: center; color: var(--muted); }
+  .views { flex: 1; overflow: auto; padding: 12px; display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .view h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 500; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; display: block;
+    background: repeating-conic-gradient(#222 0 25%, #2a2a2a 0 50%) 0 0/16px 16px; border: 1px solid var(--line); }
+  #prev { cursor: crosshair; }
+  .empty { margin: auto; text-align: center; color: var(--muted); padding: 40px; }
+  .empty b { color: var(--text); }
+  .drop { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  .hint { color: var(--muted); font-size: 11px; padding: 8px 4px; border-top: 1px solid var(--line); margin-top: 8px; }
+  kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font-size: 10px; }
+  #pix { font-family: ui-monospace, monospace; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>FabGL Color Mapper</h1>
+  <label class="btn">Abrir imagem…<input type="file" id="fileIn" accept=".bmp,.png,.jpg,.jpeg,.gif,.webp,image/*"></label>
+  <span class="rs">
+    <label><input type="checkbox" id="rsOn" checked> Reduzir para</label>
+    <input type="number" id="rsW" value="180" min="1" max="2048"> ×
+    <input type="number" id="rsH" value="180" min="1" max="2048">
+    <select id="rsMode" title="Manter proporção: cabe dentro do tamanho. Esticar: tamanho exato.">
+      <option value="fit">manter proporção + bordas pretas</option><option value="stretch">esticar</option>
+    </select>
+    <select id="rsSmooth" title="Suave: bom para fotos/ilustrações. Pixel: bom para pixel art.">
+      <option value="smooth">suave</option><option value="pixel">pixel</option>
+    </select>
+  </span>
+  <span class="rs">
+    <label for="maxColors">Máx. cores</label>
+    <select id="maxColors" title="Reduz a imagem para no máximo N cores ao abrir (median cut)">
+      <option>8</option><option>16</option><option>24</option><option>32</option>
+      <option>48</option><option selected>64</option><option>128</option><option>256</option>
+    </select>
+  </span>
+  <button id="btnAuto" disabled title="Refaz o mapeamento pela cor mais próxima (mantém os travados)">Auto (mais próxima)</button>
+  <button id="btnSaveBmp" class="primary" disabled>Salvar BMP 64 cores</button>
+  <span id="info">Nenhuma imagem</span>
+</header>
+<main>
+  <aside class="left">
+    <h2><span>Cores do BMP</span><span id="srcCount"></span></h2>
+    <div id="srcList"></div>
+  </aside>
+  <section id="center">
+    <div class="toolbar">
+      <label>Zoom
+        <select id="zoom">
+          <option>1</option><option>2</option><option selected>3</option><option>4</option>
+          <option>6</option><option>8</option><option>12</option><option>16</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="showOrig" checked> Mostrar original</label>
+      <label><input type="checkbox" id="highlight"> Destacar cor selecionada</label>
+      <span id="pix"></span>
+    </div>
+    <div class="views" id="views">
+      <div class="empty" id="empty">Arraste uma imagem aqui ou use <b>Abrir imagem…</b><br><br>
+        BMP (1/4/8/24/32 bits sem compressão), PNG, JPG, GIF, WebP.<br>
+        Ao abrir, a imagem é reduzida para o tamanho e o nº máximo de cores escolhidos no topo.</div>
+      <div class="view" id="vOrig" hidden><h3>Original</h3><canvas id="orig"></canvas></div>
+      <div class="view" id="vPrev" hidden><h3>FabGL (64 cores)</h3><canvas id="prev"></canvas></div>
+    </div>
+  </section>
+  <aside class="right">
+    <h2><span>FabGL 64 cores</span><span id="fabUsed"></span></h2>
+    <div id="fabList"></div>
+    <div id="fabInfo"></div>
+    <div class="hint">
+      Clique numa cor da imagem e depois numa cor FabGL.<br>
+      <kbd>↑</kbd><kbd>↓</kbd> navega pela lista.<br>
+      Clique no preview para selecionar a cor de origem daquele pixel.<br>
+      Cores com <span style="color:var(--accent)">●</span> foram escolhidas manualmente e não mudam no Auto.<br>
+      Cores com ponto branco no canto estão em uso.<br><br>
+      BMP salvo: 8 bits, paleta de 64 cores. Cada byte = <code>R | G&lt;&lt;2 | B&lt;&lt;4</code>
+      (igual a <code>fabgl::RGB222</code>). Para <code>RGBA2222</code> opaco: <code>byte | 0xC0</code>.
+    </div>
+  </aside>
+</main>
+
+<script>
+// ---------- FabGL palette (RGB222 → 8-bit: 0,85,170,255) ----------
+const L = [0, 85, 170, 255];
+// 64 cores RGB222. Índice = R | G<<2 | B<<4  (mesmo empacotamento de fabgl::RGB222 / RGBA2222)
+const NAMED = {
+  '0,0,0':'Black', '2,0,0':'Red', '0,2,0':'Green', '2,2,0':'Yellow', '0,0,2':'Blue', '2,0,2':'Magenta',
+  '0,2,2':'Cyan', '2,2,2':'White', '1,1,1':'BrightBlack', '3,0,0':'BrightRed', '0,3,0':'BrightGreen',
+  '3,3,0':'BrightYellow', '0,0,3':'BrightBlue', '3,0,3':'BrightMagenta', '0,3,3':'BrightCyan', '3,3,3':'BrightWhite',
+};
+const FAB = [];
+for (let i = 0; i < 64; i++) {
+  const R = i & 3, G = (i >> 2) & 3, B = (i >> 4) & 3;
+  FAB.push({ i, R, G, B, r: L[R], g: L[G], b: L[B], name: NAMED[`${R},${G},${B}`] || `R${R}G${G}B${B}` });
+}
+const NFAB = FAB.length;
+
+const hex2 = v => v.toString(16).padStart(2, '0').toUpperCase();
+const hexc = c => '#' + hex2(c.r) + hex2(c.g) + hex2(c.b);
+const css = c => `rgb(${c.r},${c.g},${c.b})`;
+
+// "redmean" distance – cheap and perceptually reasonable
+function dist(a, b) {
+  const rm = (a.r + b.r) / 2, dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
+  return (2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db;
+}
+function nearest(c) {
+  let best = 0, bd = Infinity;
+  for (const f of FAB) { const d = dist(c, f); if (d < bd) { bd = d; best = f.i; } }
+  return best;
+}
+
+// ---------- State ----------
+let img = null;       // { w, h, idx: Uint16Array (pixel -> src color id), colors: [{r,g,b,count}], name, bpp }
+let map = [];         // src color id -> fab index
+let manual = [];      // src color id -> bool
+let sel = -1;         // selected src color id
+let order = [];       // src ids sorted by count (display order)
+
+// ---------- BMP parser ----------
+function parseBMP(buf) {
+  const dv = new DataView(buf);
+  if (dv.getUint16(0, true) !== 0x4D42) throw new Error('Não é um arquivo BMP (assinatura BM ausente).');
+  const off = dv.getUint32(10, true);
+  const hsz = dv.getUint32(14, true);
+  let w, h, bpp, comp = 0, clrUsed = 0;
+  if (hsz === 12) { w = dv.getUint16(18, true); h = dv.getInt16(20, true); bpp = dv.getUint16(24, true); }
+  else {
+    w = dv.getInt32(18, true); h = dv.getInt32(22, true); bpp = dv.getUint16(28, true);
+    comp = dv.getUint32(30, true); clrUsed = dv.getUint32(46, true);
+  }
+  const topDown = h < 0; h = Math.abs(h);
+  if (comp !== 0 && !(comp === 3 && (bpp === 32 || bpp === 16)))
+    throw new Error(`Compressão BMP ${comp} (RLE) não suportada. Salve sem compressão.`);
+  if (![1, 4, 8, 24, 32].includes(bpp)) throw new Error(`BMP de ${bpp} bits não suportado.`);
+
+  const stride = Math.floor((bpp * w + 31) / 32) * 4;
+  const px = new Uint8Array(buf, off);
+  const idx = new Uint16Array(w * h);
+  let colors = [];
+
+  if (bpp <= 8) {
+    const n = clrUsed || (1 << bpp);
+    const pe = hsz === 12 ? 3 : 4, po = 14 + hsz;
+    const pal = [];
+    for (let i = 0; i < n; i++) {
+      const o = po + i * pe;
+      pal.push({ b: dv.getUint8(o), g: dv.getUint8(o + 1), r: dv.getUint8(o + 2) });
+    }
+    const raw = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const row = (topDown ? y : h - 1 - y) * stride;
+      for (let x = 0; x < w; x++) {
+        let v;
+        if (bpp === 8) v = px[row + x];
+        else if (bpp === 4) { const b = px[row + (x >> 1)]; v = (x & 1) ? b & 15 : b >> 4; }
+        else v = (px[row + (x >> 3)] >> (7 - (x & 7))) & 1;
+        raw[y * w + x] = v;
+      }
+    }
+    // merge palette entries with identical RGB, keep only used ones
+    const key2id = new Map(), palId = new Int32Array(256).fill(-1);
+    for (let i = 0; i < w * h; i++) {
+      const p = raw[i];
+      if (palId[p] < 0) {
+        const c = pal[p] || { r: 0, g: 0, b: 0 };
+        const k = (c.r << 16) | (c.g << 8) | c.b;
+        if (!key2id.has(k)) { key2id.set(k, colors.length); colors.push({ r: c.r, g: c.g, b: c.b, count: 0, pal: [] }); }
+        palId[p] = key2id.get(k);
+        colors[palId[p]].pal.push(p);
+      }
+      idx[i] = palId[p];
+      colors[palId[p]].count++;
+    }
+  } else {
+    const bytes = bpp / 8, rgba = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const row = (topDown ? y : h - 1 - y) * stride;
+      for (let x = 0; x < w; x++) {
+        const o = row + x * bytes, d = (y * w + x) * 4;
+        rgba[d] = px[o + 2]; rgba[d + 1] = px[o + 1]; rgba[d + 2] = px[o]; rgba[d + 3] = 255;
+      }
+    }
+    return { w, h, rgba, bpp };
+  }
+  return { w, h, idx, colors, bpp };
+}
+
+// ---------- True-color (PNG/JPG/24-32bpp BMP) → até 256 cores ----------
+function fromRGBA(w, h, d, maxColors = 256) {
+  const n = w * h, keys = new Uint32Array(n), counts = new Map();
+  for (let i = 0; i < n; i++) {
+    const a = d[i * 4 + 3] / 255;   // transparência → compõe sobre preto
+    const k = (Math.round(d[i * 4] * a) << 16) | (Math.round(d[i * 4 + 1] * a) << 8) | Math.round(d[i * 4 + 2] * a);
+    keys[i] = k; counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const uniq = counts.size;
+  const entries = [...counts].map(([k, c]) => ({ k, r: k >> 16, g: (k >> 8) & 255, b: k & 255, n: c }));
+  let boxes = [entries];
+  // median cut ponderado por quantidade de pixels
+  while (boxes.length < maxColors) {
+    let bi = -1, bs = 0, bch = 'r';
+    boxes.forEach((bx, i) => {
+      if (bx.length < 2) return;
+      let tot = 0; const mn = { r: 255, g: 255, b: 255 }, mx = { r: 0, g: 0, b: 0 };
+      for (const e of bx) { tot += e.n; for (const c of 'rgb') { if (e[c] < mn[c]) mn[c] = e[c]; if (e[c] > mx[c]) mx[c] = e[c]; } }
+      for (const c of 'rgb') { const s = (mx[c] - mn[c]) * Math.sqrt(tot); if (s > bs) { bs = s; bi = i; bch = c; } }
+    });
+    if (bi < 0) break;
+    const bx = boxes[bi].sort((a, b) => a[bch] - b[bch]);
+    let half = bx.reduce((s, e) => s + e.n, 0) / 2, acc = 0, cut = 1;
+    for (let i = 0; i < bx.length - 1; i++) { acc += bx[i].n; if (acc >= half) { cut = i + 1; break; } cut = i + 1; }
+    boxes.splice(bi, 1, bx.slice(0, cut), bx.slice(cut));
+  }
+  const key2id = new Map(), colors = [];
+  boxes.forEach((bx, id) => {
+    let r = 0, g = 0, b = 0, t = 0;
+    for (const e of bx) { r += e.r * e.n; g += e.g * e.n; b += e.b * e.n; t += e.n; key2id.set(e.k, id); }
+    colors.push({ r: Math.round(r / t), g: Math.round(g / t), b: Math.round(b / t), count: 0 });
+  });
+  const idx = new Uint16Array(n);
+  for (let i = 0; i < n; i++) { idx[i] = key2id.get(keys[i]); colors[idx[i]].count++; }
+  return { w, h, idx, colors, uniq };
+}
+
+// ---------- Canvas helpers / redimensionamento ----------
+function newCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function rgbaCanvas(w, h, rgba) { const c = newCanvas(w, h); c.getContext('2d').putImageData(new ImageData(rgba, w, h), 0, 0); return c; }
+function indexedToRGBA(p) {
+  const d = new Uint8ClampedArray(p.w * p.h * 4);
+  for (let i = 0; i < p.idx.length; i++) {
+    const c = p.colors[p.idx[i]]; d[i * 4] = c.r; d[i * 4 + 1] = c.g; d[i * 4 + 2] = c.b; d[i * 4 + 3] = 255;
+  }
+  return d;
+}
+async function decodeCanvas(file) {
+  const bmp = await createImageBitmap(file);
+  const c = newCanvas(bmp.width, bmp.height); c.getContext('2d').drawImage(bmp, 0, 0); return c;
+}
+function drawScaled(src, w, h, smooth) {
+  const c = newCanvas(w, h), ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = smooth; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, w, h); return c;
+}
+function resizeCanvas(src, tw, th, smooth) {
+  let c = src, w = src.width, h = src.height;
+  if (smooth) while (w / 2 >= tw && h / 2 >= th) { w = Math.floor(w / 2); h = Math.floor(h / 2); c = drawScaled(c, w, h, true); }
+  return drawScaled(c, tw, th, smooth);
+}
+// retorna {w,h} alvo ou null se não precisa redimensionar
+// no modo "manter proporção" a imagem final sempre tem o tamanho exato, completando com preto
+function padSize() {
+  if (!$('rsOn').checked || $('rsMode').value !== 'fit') return null;
+  return { w: Math.max(1, +$('rsW').value | 0), h: Math.max(1, +$('rsH').value | 0) };
+}
+function padCanvas(src, w, h) {
+  const c = newCanvas(w, h), ctx = c.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+  // imagem maior que a área (só se o redimensionamento não reduziu) é cortada no centro
+  ctx.drawImage(src, Math.floor((w - src.width) / 2), Math.floor((h - src.height) / 2));
+  return c;
+}
+function targetSize(w, h) {
+  if (!$('rsOn').checked) return null;
+  const mw = Math.max(1, +$('rsW').value | 0), mh = Math.max(1, +$('rsH').value | 0);
+  if ($('rsMode').value === 'stretch') return (w === mw && h === mh) ? null : { w: mw, h: mh };
+  const s = Math.min(mw / w, mh / h);
+  if (s >= 1) return null;                       // só reduz, nunca amplia
+  return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
+}
+
+// ---------- BMP writer (8 bpp, paleta de 64 cores RGB222) ----------
+function writeBMP8() {
+  const { w, h, idx } = img;
+  const stride = Math.floor((8 * w + 31) / 32) * 4;
+  const palSize = NFAB * 4, off = 14 + 40 + palSize, size = off + stride * h;
+  const buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  dv.setUint16(0, 0x4D42, true); dv.setUint32(2, size, true); dv.setUint32(10, off, true);
+  dv.setUint32(14, 40, true); dv.setInt32(18, w, true); dv.setInt32(22, h, true);
+  dv.setUint16(26, 1, true); dv.setUint16(28, 8, true); dv.setUint32(30, 0, true);
+  dv.setUint32(34, stride * h, true); dv.setInt32(38, 2835, true); dv.setInt32(42, 2835, true);
+  dv.setUint32(46, NFAB, true); dv.setUint32(50, NFAB, true);
+  FAB.forEach((f, i) => { const o = 54 + i * 4; u8[o] = f.b; u8[o + 1] = f.g; u8[o + 2] = f.r; u8[o + 3] = 0; });
+  for (let y = 0; y < h; y++) {
+    const row = off + (h - 1 - y) * stride;
+    for (let x = 0; x < w; x++) u8[row + x] = map[idx[y * w + x]];
+  }
+  return buf;
+}
+
+// Pergunta onde salvar (Chrome/Edge). Sem suporte (Firefox), cai no download normal.
+async function saveFile(data, name, type, desc, ext) {
+  if (window.showSaveFilePicker) {
+    try {
+      const h = await window.showSaveFilePicker({
+        suggestedName: name, id: 'fabgl-save',
+        types: [{ description: desc, accept: { [type]: [ext] } }],
+      });
+      const w = await h.createWritable(); await w.write(new Blob([data], { type })); await w.close();
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;          // usuário cancelou
+      console.warn('showSaveFilePicker falhou, usando download:', e);
+    }
+  }
+  download(data, name, type);
+}
+function download(data, name, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type }));
+  a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// ---------- Rendering ----------
+const $ = id => document.getElementById(id);
+function setText(id, t) { const e = $(id); if (e) e.textContent = t; else console.warn('elemento ausente:', id); }
+function addText(id, t) { const e = $(id); if (e) e.textContent += t; }
+const cOrig = $('orig'), cPrev = $('prev');
+let blink = false, blinkTimer = null;
+
+function setupCanvases() {
+  for (const c of [cOrig, cPrev]) { c.width = img.w; c.height = img.h; }
+  applyZoom();
+  const id = cOrig.getContext('2d').createImageData(img.w, img.h), d = id.data;
+  for (let i = 0; i < img.idx.length; i++) {
+    const c = img.colors[img.idx[i]];
+    d[i * 4] = c.r; d[i * 4 + 1] = c.g; d[i * 4 + 2] = c.b; d[i * 4 + 3] = 255;
+  }
+  cOrig.getContext('2d').putImageData(id, 0, 0);
+}
+function applyZoom() {
+  if (!img) return;
+  const z = +$('zoom').value;
+  for (const c of [cOrig, cPrev]) { c.style.width = img.w * z + 'px'; c.style.height = img.h * z + 'px'; }
+}
+function renderPreview() {
+  if (!img) return;
+  const ctx = cPrev.getContext('2d'), id = ctx.createImageData(img.w, img.h), d = id.data;
+  const hl = $('highlight').checked && sel >= 0;
+  for (let i = 0; i < img.idx.length; i++) {
+    const s = img.idx[i];
+    let f = FAB[map[s]], r = f.r, g = f.g, b = f.b;
+    if (hl && s === sel && blink) { r = 255 - r; g = 255 - g; b = 255 - b; }
+    d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+function updateBlink() {
+  clearInterval(blinkTimer); blink = false;
+  if ($('highlight').checked && sel >= 0) blinkTimer = setInterval(() => { blink = !blink; renderPreview(); }, 400);
+  renderPreview();
+}
+
+function renderSrcList() {
+  const el = $('srcList'); el.innerHTML = '';
+  if (!img) return;
+  for (const s of order) {
+    const c = img.colors[s], f = FAB[map[s]];
+    const row = document.createElement('div');
+    row.className = 'row' + (s === sel ? ' sel' : '');
+    row.dataset.id = s;
+    row.title = c.pal ? `Índice(s) na paleta original: ${c.pal.join(', ')}` : '';
+    row.innerHTML =
+      `<div class="sw" style="background:${css(c)}"></div>` +
+      `<span class="hex">${hexc(c)}</span>` +
+      `<span class="arrow">→</span>` +
+      `<div class="sw" style="background:${css(f)}"></div>` +
+      `<span class="dn" title="${fabLabel(f)}">${fabLabel(f)}</span>` +
+      `<span class="lock">${manual[s] ? '●' : ''}</span>` +
+      `<span class="cnt">${c.count.toLocaleString('pt-BR')}</span>`;
+    row.onclick = () => select(s);
+    el.appendChild(row);
+  }
+  setText('srcCount', img.colors.length);
+}
+function fabLabel(f) { return `0x${hex2(f.i)} ${f.name}`; }
+function renderFabList() {
+  const el = $('fabList'); el.innerHTML = '';
+  const use = new Array(NFAB).fill(0);
+  if (img) img.colors.forEach((c, s) => use[map[s]] += c.count);
+  const tgt = sel >= 0 ? map[sel] : -1;
+  // 4 blocos (R=0..3), cada um 4x4: linhas = G, colunas = B
+  for (let R = 0; R < 4; R++) {
+    const blk = document.createElement('div'); blk.className = 'blk';
+    blk.innerHTML = `<div class="blkt">R${R}</div>`;
+    const g = document.createElement('div'); g.className = 'grid';
+    for (let G = 0; G < 4; G++) for (let B = 0; B < 4; B++) {
+      const f = FAB[R | (G << 2) | (B << 4)];
+      const c = document.createElement('div');
+      c.className = 'cell' + (f.i === tgt ? ' target' : '') + (use[f.i] ? ' used' : '');
+      c.style.background = css(f);
+      c.title = `${fabLabel(f)}  ${hexc(f)}` + (use[f.i] ? `\n${use[f.i].toLocaleString('pt-BR')} px` : '');
+      c.onclick = () => assign(f.i);
+      c.onmouseenter = () => showFab(f, use[f.i]);
+      g.appendChild(c);
+    }
+    blk.appendChild(g); el.appendChild(blk);
+  }
+  const usedN = use.filter(Boolean).length;
+  setText('fabUsed', img ? `${usedN} usadas` : '');
+  showFab(tgt >= 0 ? FAB[tgt] : null, tgt >= 0 ? use[tgt] : 0);
+}
+function showFab(f, n) {
+  $('fabInfo').innerHTML = f
+    ? `<div class="sw" style="background:${css(f)}"></div><div><b>${f.name}</b><br>` +
+      `índice 0x${hex2(f.i)} (${f.i}) · ${hexc(f)}<br>R${f.R} G${f.G} B${f.B}${n ? ' · ' + n.toLocaleString('pt-BR') + ' px' : ''}</div>`
+    : '<span style="color:var(--muted)">Passe o mouse numa cor</span>';
+}
+function refreshAll() { renderSrcList(); renderFabList(); renderPreview(); }
+
+function select(s) {
+  sel = s; renderSrcList(); renderFabList(); updateBlink();
+  const r = $('srcList').querySelector('.row.sel'); if (r) r.scrollIntoView({ block: 'nearest' });
+}
+function assign(fi) {
+  if (!img || sel < 0) return;
+  map[sel] = fi; manual[sel] = true; refreshAll();
+}
+function autoMap(keepManual) {
+  img.colors.forEach((c, s) => { if (!(keepManual && manual[s])) { map[s] = nearest(c); manual[s] = false; } });
+  refreshAll();
+}
+
+// ---------- Loading ----------
+let lastFile = null;
+async function loadFile(file) {
+  lastFile = file;
+  try {
+    const buf = await file.arrayBuffer(), sig = new Uint8Array(buf, 0, 2);
+    let p;
+    if (sig[0] === 0x42 && sig[1] === 0x4D) p = parseBMP(buf);
+    else { const c = await decodeCanvas(file); p = { w: c.width, h: c.height, canvas: c, bpp: 'RGBA' }; }
+    const t = targetSize(p.w, p.h), maxC = +$('maxColors').value, pad = padSize();
+    const fw = t ? t.w : p.w, fh = t ? t.h : p.h;
+    const needPad = pad && (fw !== pad.w || fh !== pad.h);
+    let res;
+    if (!t && !needPad && p.idx && p.colors.length <= maxC) res = p;   // BMP com paleta já ok: cores exatas
+    else {
+      let c = p.canvas || rgbaCanvas(p.w, p.h, p.rgba || indexedToRGBA(p));
+      if (t) c = resizeCanvas(c, t.w, t.h, $('rsSmooth').value === 'smooth');
+      if (needPad) c = padCanvas(c, pad.w, pad.h);
+      res = fromRGBA(c.width, c.height, c.getContext('2d').getImageData(0, 0, c.width, c.height).data, maxC);
+    }
+    img = { ...res, bpp: p.bpp, ow: p.w, oh: p.h, name: file.name.replace(/\.[^.]+$/, '') };
+    map = new Array(img.colors.length).fill(0); manual = new Array(img.colors.length).fill(false);
+    order = img.colors.map((_, i) => i).sort((a, b) => img.colors[b].count - img.colors[a].count);
+    sel = -1;
+    $('empty').hidden = true; $('vPrev').hidden = false; $('vOrig').hidden = !$('showOrig').checked;
+    ['btnAuto', 'btnSaveBmp'].forEach(id => $(id).disabled = false);
+    setText('info', `${file.name} · ${img.ow}×${img.oh}` +
+      (img.ow !== img.w || img.oh !== img.h ? ` → ${img.w}×${img.h}` : '') + ` · ${img.bpp === 'RGBA' ? 'PNG/JPG' : img.bpp + ' bpp'} · ` +
+      (img.uniq > img.colors.length ? `${img.uniq.toLocaleString('pt-BR')} cores reduzidas a ${img.colors.length}` : `${img.colors.length} cores usadas`));
+    setupCanvases(); autoMap(false); updateBlink();
+  } catch (e) { alert(e.message); console.error(e); }
+}
+
+$('fileIn').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ''; };
+const views = $('center');
+views.addEventListener('dragover', e => { e.preventDefault(); views.classList.add('drop'); });
+views.addEventListener('dragleave', () => views.classList.remove('drop'));
+views.addEventListener('drop', e => {
+  e.preventDefault(); views.classList.remove('drop');
+  const f = e.dataTransfer.files[0]; if (f) loadFile(f);
+});
+
+// mudar opções de redimensionamento recarrega a imagem atual
+for (const id of ['rsOn', 'rsW', 'rsH', 'rsMode', 'rsSmooth', 'maxColors'])
+  $(id).addEventListener('change', () => { if (lastFile) loadFile(lastFile); });
+
+$('btnAuto').onclick = () => autoMap(true);
+$('btnSaveBmp').onclick = () => saveFile(writeBMP8(), img.name + '_fabgl.bmp', 'image/bmp', 'Bitmap', '.bmp');
+
+$('zoom').onchange = applyZoom;
+$('showOrig').onchange = () => { if (img) $('vOrig').hidden = !$('showOrig').checked; };
+$('highlight').onchange = updateBlink;
+
+function pixelAt(canvas, e) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / r.width * img.w), y = Math.floor((e.clientY - r.top) / r.height * img.h);
+  return (x >= 0 && y >= 0 && x < img.w && y < img.h) ? { x, y, s: img.idx[y * img.w + x] } : null;
+}
+for (const c of [cOrig, cPrev]) {
+  c.addEventListener('click', e => { if (!img) return; const p = pixelAt(c, e); if (p) select(p.s); });
+  c.addEventListener('mousemove', e => {
+    if (!img) return; const p = pixelAt(c, e); if (!p) return;
+    const sc = img.colors[p.s], f = FAB[map[p.s]];
+    setText('pix', `(${p.x},${p.y}) ${hexc(sc)} → ${fabLabel(f)}`);
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (!img || e.target.tagName === 'SELECT' || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    let i = order.indexOf(sel);
+    i = e.key === 'ArrowDown' ? Math.min(order.length - 1, i + 1) : Math.max(0, i - 1);
+    select(order[i]);
+  }
+});
+
+renderFabList();
+</script>
+</body>
+</html>

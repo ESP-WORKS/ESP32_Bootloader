@@ -139,7 +139,7 @@ uint8_t ps2_get_key() {
                 ps2_pop();
                 return 0;
             }
-            return code;
+            return code | 0x80;  // mark extended keys (arrows, PgUp/PgDn) so they're distinct
         }
         return code;
     }
