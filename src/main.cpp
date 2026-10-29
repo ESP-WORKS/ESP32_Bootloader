@@ -11,7 +11,8 @@ int statusY_original = MENU_Y_START;
 int statusY = MENU_Y_START;
 const uint32_t AUTOBOOT_MS = 10000;
 
-fabgl::VGA16Controller DisplayController;
+//fabgl::VGA16Controller DisplayController;
+fabgl::VGAController DisplayController;
 fabgl::Canvas          cv(&DisplayController);
 
 volatile uint8_t ps2_buffer[PS2_BUFFER_SIZE];

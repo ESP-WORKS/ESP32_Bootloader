@@ -53,7 +53,7 @@
 #define KEY_E_KEY   0x24
 
 #define SPEAKER_PIN 25
-#define VERSION "ver 0.7.0a"
+#define VERSION "ver 0.8.0b"
 
 // Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.
 // Set -DOTA_SUSPEND_VGA_DURING_FLASH=1 if flash stage still sparkles.
@@ -89,7 +89,8 @@ extern int statusY_original;
 extern int statusY;
 extern const uint32_t AUTOBOOT_MS;
 
-extern fabgl::VGA16Controller DisplayController;
+//extern fabgl::VGA16Controller DisplayController;
+extern fabgl::VGAController DisplayController;
 extern fabgl::Canvas          cv;
 
 extern volatile uint8_t ps2_buffer[PS2_BUFFER_SIZE];

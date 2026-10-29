@@ -118,8 +118,14 @@ void drawHeader() {
     drawKbdBadge();
 }
 
-static const int MENU_BAR_W = 150;
-static const int MENU_BAR_X = (HRES - MENU_BAR_W) / 2;
+static const int MENU_BAR_W = 140;      // list width (left-aligned)
+static const int MENU_BAR_X = 8;        // list starts near left edge
+
+// Emulator preview image (image.bmp inside the emulator folder)
+static const int EMU_IMG_W = 180;
+static const int EMU_IMG_H = 180;
+static const int EMU_IMG_X = HRES - EMU_IMG_W;      // right side: 320-180 = 140
+static const int EMU_IMG_Y = MENU_Y_START;
 static const int MENU_COUNTER_CLEAR_W = 5 * 6;  // room for "99/99"
 
 void drawMenuCounter(int selected) {
@@ -144,15 +150,106 @@ void drawMenuRow(int idx, int selected, int scrollOffset, const String& currentP
     int y = MENU_Y_START + i * MENU_LINE_H;
     fillRect(MENU_BAR_X, y, MENU_BAR_W, MENU_LINE_H, paper);
 
-    int textW = (int)strlen(line) * 6;
-    int textX = MENU_BAR_X + (MENU_BAR_W - textW) / 2;
     cv.selectFont(&fabgl::FONT_6x12);
-    drawString(textX, y, line, ink, paper);
+    drawString(MENU_BAR_X + 2, y, line, ink, paper);  // left-aligned
+}
+
+// Clears the preview image area.
+void clearEmulatorImage() {
+    fillRect(EMU_IMG_X, EMU_IMG_Y, EMU_IMG_W, EMU_IMG_H, C_BLACK);
+}
+
+// Draws /bootloader/<folderName>.bmp (8-bit or 24-bit uncompressed BMP, up to 180x180).
+// folderPath comes in as "/ANOTHER WORLD"; the image is "/bootloader/ANOTHER WORLD.bmp".
+// If the file is missing or not a valid BMP, nothing is drawn.
+void drawEmulatorImage(const char* folderPath) {
+    clearEmulatorImage();
+
+    const char* name = folderPath;
+    while (*name == '/') name++;              // strip leading slash(es)
+
+    char imgPath[200];
+    snprintf(imgPath, sizeof(imgPath), "/bootloader/%s.bmp", name);
+
+    if (!SD.exists(imgPath)) return;
+
+    File f = SD.open(imgPath, FILE_READ);
+    if (!f) return;
+
+    uint8_t header[54];
+    int rd = f.read(header, 54);
+    if (rd != 54) { f.close(); return; }
+    if (header[0] != 'B' || header[1] != 'M') { f.close(); return; }
+
+    uint32_t dataOffset = header[10] | (header[11] << 8) | (header[12] << 16) | (header[13] << 24);
+    int32_t  w  = header[18] | (header[19] << 8) | (header[20] << 16) | (header[21] << 24);
+    int32_t  h  = header[22] | (header[23] << 8) | (header[24] << 16) | (header[25] << 24);
+    uint16_t bpp = header[28] | (header[29] << 8);
+
+    uint32_t headerSize = header[14] | (header[15] << 8) | (header[16] << 16) | (header[17] << 24);
+
+
+    bool topDown = false;
+    if (h < 0) { h = -h; topDown = true; }   // negative height = top-down BMP
+
+    int drawW = (w < EMU_IMG_W) ? w : EMU_IMG_W;
+    int drawH = (h < EMU_IMG_H) ? h : EMU_IMG_H;
+
+    // Precompute Canvas colors per BMP palette entry (8-bit) — avoids per-pixel RGB math.
+    RGB888 palColor[256];
+    if (bpp == 8) {
+        uint32_t palOffset = 14 + headerSize;       // file header (14) + DIB header
+        f.seek(palOffset);
+        for (int i = 0; i < 256; i++) {
+            uint8_t e[4];
+            if (f.read(e, 4) != 4) break;
+            palColor[i] = RGB888(e[2], e[1], e[0]);  // BMP palette entry is B,G,R,0
+        }
+    }
+
+    int rowSize = (bpp == 24) ? (((w * 3 + 3) / 4) * 4)
+                              : (((w * 1 + 3) / 4) * 4);   // 8bpp = 1 byte/px, padded to 4
+
+    // Read the whole pixel area into PSRAM in ONE SD read (seek-per-row over SPI is slow).
+    uint32_t pixBytes = (uint32_t)rowSize * h;
+    uint8_t* pix = (uint8_t*)ps_malloc(pixBytes);
+    if (!pix) { f.close(); return; }
+    f.seek(dataOffset);
+    f.read(pix, pixBytes);
+    f.close();
+
+    // Draw same-color horizontal runs as single lines: few primitives, fast.
+    for (int ry = 0; ry < drawH; ry++) {
+        int srcRow = topDown ? ry : (h - 1 - ry);
+        uint8_t* row = pix + (uint32_t)srcRow * rowSize;
+
+        int y = EMU_IMG_Y + ry;
+        int rx = 0;
+        while (rx < drawW) {
+            RGB888 c = (bpp == 8)
+                ? palColor[row[rx]]
+                : RGB888(row[rx*3 + 2], row[rx*3 + 1], row[rx*3 + 0]);
+            int runStart = rx;
+            rx++;
+            while (rx < drawW) {
+                RGB888 c2 = (bpp == 8)
+                    ? palColor[row[rx]]
+                    : RGB888(row[rx*3 + 2], row[rx*3 + 1], row[rx*3 + 0]);
+                if (!(c2 == c)) break;
+                rx++;
+            }
+            cv.setPenColor(c);
+            cv.drawLine(EMU_IMG_X + runStart, y, EMU_IMG_X + rx - 1, y);
+        }
+    }
+
+    free(pix);
 }
 
 void drawMenu(int selected, int scrollOffset, const String& currentPath) {
     fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START + 12, C_BLACK);
     drawMenuCounter(selected);
+    drawEmulatorImage(menuEntries[selected].path);
 
     int visible = min(menuCount, MAX_VISIBLE);
     for (int i = 0; i < visible; i++) {
@@ -173,6 +270,7 @@ void updateMenuSelection(int oldSelected, int newSelected,
     if (oldSelected != newSelected) {
         drawMenuRow(oldSelected, newSelected, newScroll, currentPath);
         drawMenuRow(newSelected, newSelected, newScroll, currentPath);
+        drawEmulatorImage(menuEntries[newSelected].path);
     }
     drawMenuCounter(newSelected);
     cv.waitCompletion(false);  // drain FabGL queue before next key; prevents lockup on fast nav
