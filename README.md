@@ -1,27 +1,12 @@
 <img src="https://alternativebits.com/esp32/logo_app.png" alt="ESP32 Logo"/>
 
-**NEW VERSION 0.2.0**
-
-Allows **multiple emulators on a single card** . Place the `firmware.bin` and `version.txt` files inside folders in the root directory of the SD card (for example: `MSX`,`ESPectrum`, `CPCESP`, etc.), and a new menu will be displayed with the option to choose which emulator will be flashed/executed.
-
-If you prefer to use one card for each emulator, simply place `firmware.bin`  and `version.txt` in the root directory of the SD card, and the flashing process will run when you swap cards.
-
-
-
-If you use a single card for multiple emulators, don't forget to remove `firmware.bin` and `version.txt` from the root directory of the SD card.
-
 ## What is this ???
 
-The **ESP32 Bootloader** is a firmware for the **TTGO VGA32 v1.4** (or any ESP32) that turns the ESP32 into an emulator loader (or any other software) via SD card.
+The **ESP32 Bootloader** is a firmware for the **TTGO VGA32 v1.4** (or any ESP32 with FAGB VGA Output) that turns the ESP32 into an emulator loader (or any other software) via SD card. Instead of needing a computer to flash a different emulator onto the ESP32 every time, you simply insert an SD card with the desired firmware, power up the device, and it does everything automatically — checks if the firmware is new, flashes it if necessary, and starts the emulator.
 
-The idea is simple: instead of needing a computer to flash a different emulator onto the ESP32 every time, you simply insert an SD card with the desired firmware, power up the device, and it does everything automatically — checks if the firmware is new, flashes it if necessary, and starts the emulator.
+Allows **multiple emulators on a single card**. Place `firmware.bin` and `version.txt` files inside folders in the root directory of the SD card (for example: `MSX`, `ESPectrum`, `CPCESP`, etc.), and a menu will be displayed with the option to choose which emulator will be flashed/executed. If you prefer to use one card for each emulator, simply place `firmware.bin` and `version.txt` in the root directory of the SD card, and the flashing process will run when you swap cards.
 
 The bootloader occupies the `factory` partition of the ESP32. Emulators are flashed to the `ota_0` partition. Next time you power up with the same firmware, it goes directly to the emulator without going through the bootloader. If you swap the card, it loads the new firmware. Pretty much like Multicore does.
-
-> ⚠️ **WARNING: This project is in ULTRA SUPER BETA stage.** Use at your own risk, bugs are expected, things will break, and everything can change at any time. You have been warned! 😄
-
-<img src='https://alternativebits.com/esp32/cards.png' width="500px">
-Organize your emulators like this !
 
 ## Table of Contents
 
@@ -29,23 +14,17 @@ Organize your emulators like this !
 
 * [2. How to flash the bootloader?](#2-how-to-flash-the-bootloader)
 
-* [3. Where to find the emulators?](#3-where-to-find-the-emulators)
+* [3. Downloading emulators over WiFi](#3-downloading-emulators-over-wifi)
 
-* [3.1 How to extract the correct firmware.bin](#31-how-to-extract-the-correct-firmwarebin)
+* [4. How to adapt any project to work with the bootloader](#4-how-to-adapt-any-project-to-work-with-the-bootloader)
 
-* [4. Known issues](#4-known-issues)
+* [5. Bootloader partition table (for reference)](#5-bootloader-partition-table)
 
-* [5. How to adapt any project to work with the bootloader](#5-How-to-adapt-any-project-to-work-with-the-bootloader)
+* [6. Credits and Acknowledgments](#6-credits-and-acknowledgments)
 
-* [6. Bootloader partition table (for reference)](#6-Bootloader-partition-table)
+* [7. If you liked it](#7-if-you-liked-it-you-know-what-to-do)
 
-* [7. ULTRA SUPER BETA](#7-ultra-super-beta)
-
-* [8. Credits](#8-credits)
-
-* [9. If you liked it](#9-if-you-liked-it-you-know-what-to-do)
-
-* [10. License](#10-License)
+* [8. License](#8-license)
 
 ***
 
@@ -97,14 +76,14 @@ Check SD card
 
 ### SD card structure
 
-### Single-emulator mode (files in SD root)
+#### Single-emulator mode (files in SD root)
 
-| File           | Description                                                            |
+| File           | Description                                                              |
 | -------------- | ------------------------------------------------------------------------ |
-| `firmware.bin` | The emulator firmware                                                  |
-| `version.txt`  | A simple text with the firmware name/version (e.g.: `ESPectrum_1.4.5`) |
+| `firmware.bin` | The emulator firmware                                                    |
+| `version.txt`  | A simple text with the firmware name/version (e.g.: `ESPectrum_1.4.5`)   |
 
-### Multi-emulator mode (one folder per emulator)
+#### Multi-emulator mode (one folder per emulator)
 
 ```
 /SD card root
@@ -120,17 +99,13 @@ Check SD card
 └── ...
 ```
 
-| File/Folder      | Description                                                              |
-| ---------------- | ------------------------------------------------------------------------ |
-| `<FolderName>/`   | One folder per emulator. The folder name is what shows up in the menu  |
-| `firmware.bin`    | The emulator firmware, inside its folder                               |
-| `version.txt`     | Firmware name/version for that emulator (e.g.: `CPCESP.0.85`)          |
+| File/Folder     | Description                                                              |
+| --------------- | ------------------------------------------------------------------------ |
+| `<FolderName>/` | One folder per emulator. The folder name is what shows up in the menu    |
+| `firmware.bin`  | The emulator firmware, inside its folder                                 |
+| `version.txt`   | Firmware name/version for that emulator (e.g.: `CPCESP.0.85`)            |
 
 If both `firmware.bin` and `version.txt` exist in the SD card root, the bootloader uses single-emulator mode and skips the menu. Otherwise, it scans every folder on the card and builds the menu from the ones containing both files.
-
-### About firmware.bin
-
-**Do not use the web flasher** **`.bin`** **directly!** For **ESPectrum**, use the `.upg` file directly — just rename it to `firmware.bin`. For **MSPX** and **CPC**, you need to extract the app from the merged `.bin` (see section 4.1) or when the author makes the files available in their repository..
 
 ## 2. How to flash the bootloader?
 
@@ -144,63 +119,26 @@ cd esp32-bootloader
 pio run --target upload
 ```
 
-## 3. Where to find the emulators?
+## 3. Downloading emulators over WiFi
 
-* **ESPectrum:** [Visite EremusOne Oficial ESPectrum github page](https://github.com/EremusOne/ESPectrum)
+The bootloader can also fetch emulators directly from the internet, so you don't need to prepare the SD card on a computer every time a new emulator is released.
 
-  get the `.upg` file, rename it to `firmware.bin` and put on a sd card together with `version.txt` file
+To enable this, create a file called **`wificonfig.rc`** in the **root of the SD card** with your network credentials:
 
-* **CPC:** [Visite EremusOne Oficial CPCESP github page](https://github.com/EremusOne/CPCESP_alpha))
-
-  Instructions how to extract firmware.bin in [section 3.1](#31-how-to-extract-the-correct-firmwarebin)
-
-* **MSPX:** Available only to Eremus sponsors. Link coming soon.
-
-* **VIC20:** [Direct download](https://alternativebits.com/esp32/VIC20.zip)
-
-* **TRS COLOR:** [Direct download](http://alternativebits.com/esp32/coco.zip)
-
-## 3.1. How to extract the correct firmware.bin
-
-### For MSPX and CPC (offset 0x40000)
-
-```python
-python3 -c "
-with open('firmware_merged.bin', 'rb') as f:
-    data = f.read()
-app = data[0x40000:]
-with open('firmware.bin', 'wb') as f:
-    f.write(app)
-print(f'firmware.bin: {len(app)//1024} KB')"
+```
+ssid=YourNetworkName
+password=YourPassword
 ```
 
-### To find the correct offset for any .bin
+When the bootloader boots and finds `wificonfig.rc`, it connects to the network and adds a **"Download emulators"** option to the main menu. This option queries the online catalog, lists the emulators available for download, and lets you pick one. The selected firmware is downloaded, saved into its own folder on the SD card (`/<EmulatorName>/firmware.bin` + `version.txt`), and then flashed and started as usual.
 
-```python
-python3 -c "
-with open('firmware_merged.bin', 'rb') as f:
-    data = f.read()
-print(f'Total size: {len(data)} bytes ({len(data)//1024} KB)')
-for offset in [0x0000, 0x1000, 0x8000, 0xe000, 0x10000, 0x40000, 0x90000, 0xa0000]:
-    if offset < len(data):
-        print(f'offset 0x{offset:05X}: 0x{data[offset]:02X}')"
-```
+**Notes:**
 
-Look for offsets returning `0xE9`. The **first** is the bootloader (skip). The **second** is the app (use this).
+* `wificonfig.rc` is only read — the bootloader never overwrites it.
+* If the file is missing or the connection fails, the bootloader keeps working normally in offline mode.
+* Downloaded emulators stay on the SD card, so you can reuse them later without WiFi.
 
-## 4. Known issues
-
-* ⚠️ **PS2 Keyboard** — improved in 0.6.0a (ISR critical section + no buffer wipe). If it still misbehaves after boot, power off and on again.
-
-* ⚠️ **PocketTRS** — not compatible yet due to WiFi conflicts and partition differences.
-
-* ⚠️ **First flash after erase** — some emulators save settings in NVS. After erase flash, settings are lost.
-
-* ⚠️ **ESPectrum self-update** — no longer works due to partition changes. Use the bootloader to update instead.
-
-***
-
-## 5. How to adapt any project to work with the bootloader
+## 4. How to adapt any project to work with the bootloader
 
 The bootloader always flashes firmware to the `ota_0` partition (`0x130000`). For the app to return control to the bootloader on the next power-up, it must erase the `otadata` partition during startup — otherwise the ESP32 will boot directly into the app, bypassing the bootloader.
 
@@ -234,7 +172,7 @@ Once this is done:
 
 ---
 
-## 6. Bootloader partition table
+## 5. Bootloader partition table
 
 This is the partition layout used by the bootloader. It is provided here for reference only — you do not need to replicate this in your own projects.
 
@@ -255,19 +193,22 @@ spiffs,   data, spiffs,  0x3F0000, 0x10000
 | ota_0     | 0x130000   | 2816KB  | Where emulator firmwares are stored|
 | spiffs    | 0x3F0000   | 64KB    | Reserved                           |
 
-> This table matches `partitions.csv`. Older docs that mentioned factory `0x90000` / ota_0 `@0xA0000` / 3392KB are outdated.
+## 6. Credits and Acknowledgments
 
-## 7. ULTRA SUPER BETA
+**Credits**
 
-**It can crash · The API may change · It has bugs · But it works!** — most of the time.
-
-## 8. Credits
-
-* **[EremusOne](https://github.com/EremusOne)** — for ESPectrum, CPCEsp and MSPX
-
+* **[fg1998](https://github.com/fg1998)** — Bootloader development
 * **[fdivitto (FabGL)](https://github.com/fdivitto/fabgl)** — for the FabGL library
 
-## 9. If you liked it, you know what to do!
+**Special thanks to:**
+
+* [Joselito Oliveira](https://github.com/joselito668) - Boooloader Download module and many improvements !
+* [Leomanes](https://github.com/leomanes) - A lot of compatible emulators !
+* [Evandro Massini](https://github.com/EvandroMassini) — MSX2 full working emulator
+* [reyco2000](https://github.com/reyco2000) - Macintosh and TRS-80 compatible emulators
+* [Victor Iborra (EremusOne)](https://github.com/eremusone) - ESPectrum, MSPX and CPCESP emulators
+
+## 7. If you liked it, you know what to do!
 
 Consider a donation through **[this link](https://github.com/sponsors/fg1998)**. I will spend all donated money on BEER 🍺
 
@@ -280,7 +221,7 @@ If you want to hire me as a freelancer for WEB or embedded projects, get in touc
 *find me —* *<fg1998@gmail.com>*
 
 
-## 10. License
+## 8. License
 
 This project is licensed under the GNU General Public License v3.0 (GPLv3).
 
