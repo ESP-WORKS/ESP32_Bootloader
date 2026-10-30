@@ -57,7 +57,7 @@
 #define KEY_PGUP    (0x7D | 0x80)   // page up
 
 #define SPEAKER_PIN 25
-#define VERSION "ver 0.8.0b"
+#define VERSION "ver 0.8.1b"
 
 // Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.
 // Set -DOTA_SUSPEND_VGA_DURING_FLASH=1 if flash stage still sparkles.

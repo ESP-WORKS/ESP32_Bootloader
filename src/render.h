@@ -125,7 +125,8 @@ static const int MENU_BAR_X = 8;        // list starts near left edge
 static const int EMU_IMG_W = 180;
 static const int EMU_IMG_H = 180;
 static const int EMU_IMG_X = HRES - EMU_IMG_W;      // right side: 320-180 = 140
-static const int EMU_IMG_Y = MENU_Y_START;
+//static const int EMU_IMG_Y = MENU_Y_START;
+static const int EMU_IMG_Y = 45;
 static const int MENU_COUNTER_CLEAR_W = 5 * 6;  // room for "99/99"
 
 void drawMenuCounter(int selected) {
@@ -159,6 +160,29 @@ void clearEmulatorImage() {
     fillRect(EMU_IMG_X, EMU_IMG_Y, EMU_IMG_W, EMU_IMG_H, C_BLACK);
 }
 
+// Footer info line: first line of /bootloader/<folderName>.txt, drawn below the menu area.
+static const int EMU_INFO_Y = VRES - 13;   // one line from the bottom
+
+void drawEmulatorInfo(const char* folderPath) {
+    fillRect(0, EMU_INFO_Y, HRES, 12, C_BLACK);   // clear the footer line
+
+    const char* name = folderPath;
+    while (*name == '/') name++;
+
+    char txtPath[200];
+    snprintf(txtPath, sizeof(txtPath), "/assets/%s.txt", name);
+    if (!SD.exists(txtPath)) return;
+
+    File f = SD.open(txtPath, FILE_READ);
+    if (!f) return;
+    String line = f.readStringUntil('\n');
+    f.close();
+    line.trim();
+    if (line.length() == 0) return;
+
+    drawString(6, EMU_INFO_Y, line.c_str(), C_CYAN, C_BLACK);
+}
+
 // Draws /bootloader/<folderName>.bmp (8-bit or 24-bit uncompressed BMP, up to 180x180).
 // folderPath comes in as "/ANOTHER WORLD"; the image is "/bootloader/ANOTHER WORLD.bmp".
 // If the file is missing or not a valid BMP, nothing is drawn.
@@ -169,7 +193,7 @@ bool drawEmulatorImage(const char* folderPath) {
     while (*name == '/') name++;              // strip leading slash(es)
 
     char imgPath[200];
-    snprintf(imgPath, sizeof(imgPath), "/bootloader/%s.bmp", name);
+    snprintf(imgPath, sizeof(imgPath), "/assets/%s.bmp", name);
 
     if (!SD.exists(imgPath)) return true;
 
@@ -418,6 +442,7 @@ int runMenu() {
         // Draw the deferred preview image once navigation has paused
         if (imgPendingFor != imgShownFor &&
             (millis() - imgPendingSince) >= IMG_DELAY_MS) {
+            drawEmulatorInfo(menuEntries[imgPendingFor].path);   // footer text (fast)
             if (drawEmulatorImage(menuEntries[imgPendingFor].path))
                 imgShownFor = imgPendingFor;   // only mark done if it finished (not aborted)
         }
