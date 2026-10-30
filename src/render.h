@@ -122,11 +122,11 @@ static const int MENU_BAR_W = 140;      // list width (left-aligned)
 static const int MENU_BAR_X = 8;        // list starts near left edge
 
 // Emulator preview image (image.bmp inside the emulator folder)
-static const int EMU_IMG_W = 180;
-static const int EMU_IMG_H = 180;
+static const int EMU_IMG_W = 160;
+static const int EMU_IMG_H = 160;
 static const int EMU_IMG_X = HRES - EMU_IMG_W;      // right side: 320-180 = 140
-//static const int EMU_IMG_Y = MENU_Y_START;
-static const int EMU_IMG_Y = 45;
+static const int EMU_IMG_Y = MENU_Y_START - 10;
+//static const int EMU_IMG_Y = 45;
 static const int MENU_COUNTER_CLEAR_W = 5 * 6;  // room for "99/99"
 
 void drawMenuCounter(int selected) {

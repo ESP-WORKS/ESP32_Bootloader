@@ -6,34 +6,11 @@
 #include <esp_wifi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
-#include "freertos/task.h"
 #include "bootloader.h"   // config, globals, render (drawProgress/statusLine/...)
 
 #define EMUL_JSON_URL "http://alternativebits.com/esp32/emulators.php"
 #define WIFICONFIG_FILE "/wificonfig.rc"
-
-// --- A/B test: WiFi download worker on core 0, UI/Canvas on core 1 (Arduino) ---
-// FabGL already puts video-intensive tasks on (WIFI_CORE ^ 1) == core 1.
-#ifndef WIFI_DL_CORE
-#define WIFI_DL_CORE  0
-#endif
-#ifndef WIFI_DL_CHUNK
-#define WIFI_DL_CHUNK  (256 * 1024)  // large bursts — core split handles flicker
-#endif
-#ifndef WIFI_UI_POLL_MS
-#define WIFI_UI_POLL_MS  100   // how often UI samples live offset
-#endif
-#ifndef WIFI_BURST_TX_POWER
-#define WIFI_BURST_TX_POWER  60
-#endif
-#ifndef WIFI_DL_STACK
-#define WIFI_DL_STACK  16384
-#endif
-#ifndef WIFI_DL_WATCHDOG_MS
-#define WIFI_DL_WATCHDOG_MS  120000
-#endif
+#define WIFI_BURST_TX_POWER 60
 
 String updaterWifiIP = "";
 
@@ -42,22 +19,13 @@ static int  updaterDlLabelY = 0;
 static int  updaterDlBarY = 0;
 static int8_t updaterSavedTxPower = 78;
 
-struct UpdaterDlCtx {
-    char url[288];
-    uint8_t* buf;
-    int total;
-    bool rangesOk;
-    volatile size_t offset;   // live byte count — UI polls this (no wait)
-    volatile bool failed;
-    volatile bool finished;
-    SemaphoreHandle_t doneSem;
-};
-
 bool isNewerVersion(const char* localVer, const char* remoteVer) {
-    int lMaj=0, lMin=0, lPatch=0;
-    int rMaj=0, rMin=0, rPatch=0;
+    int lMaj = 0, lMin = 0, lPatch = 0;
+    int rMaj = 0, rMin = 0, rPatch = 0;
+
     sscanf(localVer,  "%d.%d.%d", &lMaj, &lMin, &lPatch);
     sscanf(remoteVer, "%d.%d.%d", &rMaj, &rMin, &rPatch);
+
     if (rMaj != lMaj) return rMaj > lMaj;
     if (rMin != lMin) return rMin > lMin;
     return rPatch > lPatch;
@@ -65,11 +33,18 @@ bool isNewerVersion(const char* localVer, const char* remoteVer) {
 
 bool updaterWifiConnect() {
     if (!SD.exists(WIFICONFIG_FILE)) return false;
+
     File f = SD.open(WIFICONFIG_FILE);
     if (!f) return false;
-    String ssid = f.readStringUntil('\n'); ssid.trim();
-    String pass = f.readStringUntil('\n'); pass.trim();
+
+    String ssid = f.readStringUntil('\n');
+    ssid.trim();
+
+    String pass = f.readStringUntil('\n');
+    pass.trim();
+
     f.close();
+
     if (ssid.length() == 0) return false;
 
     WiFi.mode(WIFI_STA);
@@ -85,22 +60,27 @@ bool updaterWifiConnect() {
         delay(500);
         tries++;
     }
+
     if (WiFi.status() == WL_CONNECTED) {
         WiFi.setSleep(false);
         esp_wifi_set_ps(WIFI_PS_NONE);
         updaterWifiIP = WiFi.localIP().toString();
+
         if (esp_wifi_get_max_tx_power(&updaterSavedTxPower) != ESP_OK) {
             updaterSavedTxPower = 78;
         }
+
         return true;
     }
+
     return false;
 }
 
 void ensureDirs(const char* fullPath) {
     char tmp[160];
-    strncpy(tmp, fullPath, sizeof(tmp)-1);
-    tmp[sizeof(tmp)-1] = '\0';
+    strncpy(tmp, fullPath, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
@@ -127,199 +107,143 @@ static void updaterRadioRestore() {
     esp_wifi_set_max_tx_power(updaterSavedTxPower);
 }
 
-static void updaterPaintProgress(size_t done, size_t total, const char* action) {
+static void updaterPaintProgress(size_t done, size_t total,
+                                const char* action) {
     if (updaterDlLabel[0]) {
         fillRect(0, updaterDlLabelY, HRES, 12, C_BLACK);
         drawString(10, updaterDlLabelY, updaterDlLabel, C_CYAN, C_BLACK);
     }
+
     int savedY = statusY;
     statusY = updaterDlBarY;
-    int pct = (total > 0) ? (int)((done * 100) / total) : 0;
+
+    int pct = (total > 0)
+        ? (int)((done * 100) / total)
+        : 0;
+
     fillRect(0, updaterDlBarY, HRES, 20, C_BLACK);
     drawProgress(pct, done, total, action);
+
     statusY = savedY;
 }
 
-// Read body while publishing live progress into ctx->offset (baseOffset + got).
-// Does NOT block on UI — download speed stays independent of the bar.
-static bool updaterReadBody(HTTPClient& http, uint8_t* dst, int expect,
-                            UpdaterDlCtx* ctx, size_t baseOffset) {
-    WiFiClient* stream = http.getStreamPtr();
-    int got = 0;
-    uint32_t lastDataMs = millis();
-    while (got < expect) {
-        if (!http.connected() && stream->available() == 0) break;
-        int avail = stream->available();
-        if (avail > 0) {
-            int rd = stream->readBytes(dst + got, min(avail, expect - got));
-            got += rd;
-            lastDataMs = millis();
-            if (ctx) ctx->offset = baseOffset + (size_t)got;
-        } else {
-            if (millis() - lastDataMs > 15000) break;
-            delay(1);
+// For chunked responses without Content-Length, the total size is unknown
+// until the response finishes. Show bytes received and an animated bar.
+static void updaterPaintUnknownProgress(size_t done) {
+    if (updaterDlLabel[0]) {
+        fillRect(0, updaterDlLabelY, HRES, 12, C_BLACK);
+        drawString(10, updaterDlLabelY, updaterDlLabel, C_CYAN, C_BLACK);
+    }
+
+    int savedY = statusY;
+    statusY = updaterDlBarY;
+
+    fillRect(0, updaterDlBarY, HRES, 20, C_BLACK);
+
+    char text[48];
+    snprintf(text, sizeof(text), "Downloading %u KB",
+             (unsigned)(done / 1024));
+    drawString(20, statusY, text, C_YELLOW, C_BLACK);
+
+    fillRect(20, statusY + 13, 280, 6, C_BLACK);
+
+    int phase = (millis() / 20) % 480;
+    int x = (phase <= 240) ? phase : 480 - phase;
+    fillRect(20 + x, statusY + 13, 40, 6, C_GREEN);
+
+    statusY = savedY;
+}
+
+// Stream adapter: HTTPClient writes decoded response data here. It forwards
+// bytes to the SD file and updates the progress display as data arrives.
+class UpdaterProgressStream : public Stream {
+public:
+    UpdaterProgressStream(File& file, int total)
+        : _file(file), _total(total) {}
+
+    int available() override {
+        return 0;
+    }
+
+    int read() override {
+        return -1;
+    }
+
+    int peek() override {
+        return -1;
+    }
+
+    void flush() override {
+        _file.flush();
+    }
+
+    size_t write(uint8_t value) override {
+        return write(&value, 1);
+    }
+
+    size_t write(const uint8_t* data, size_t size) override {
+        size_t n = _file.write(data, size);
+
+        if (n != size) {
+            setWriteError();
         }
-    }
-    if (ctx) ctx->offset = baseOffset + (size_t)got;
-    return got == expect;
-}
 
-static int updaterParseTotalFromContentRange(HTTPClient& http) {
-    String cr = http.header("Content-Range");
-    int slash = cr.lastIndexOf('/');
-    if (slash < 0) return -1;
-    return cr.substring(slash + 1).toInt();
-}
+        _written += n;
 
-static int updaterProbeSize(const char* url, bool& rangesOk) {
-    rangesOk = false;
-    const char* collect[] = { "Content-Length", "Accept-Ranges", "Content-Range" };
-
-    HTTPClient probe;
-    probe.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    probe.begin(url);
-    probe.collectHeaders(collect, 3);
-    int code = probe.sendRequest("HEAD");
-    int total = -1;
-    if (code == HTTP_CODE_OK || code == HTTP_CODE_NO_CONTENT) {
-        total = probe.getSize();
-        String ar = probe.header("Accept-Ranges");
-        rangesOk = (ar.indexOf("bytes") >= 0);
-    }
-    probe.end();
-
-    if (total > 0 && rangesOk) return total;
-
-    HTTPClient rp;
-    rp.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    rp.begin(url);
-    rp.collectHeaders(collect, 3);
-    rp.addHeader("Range", "bytes=0-0");
-    updaterRadioWakeForBurst();
-    code = rp.GET();
-    if (code == HTTP_CODE_PARTIAL_CONTENT) {
-        total = updaterParseTotalFromContentRange(rp);
-        rangesOk = (total > 0);
-    } else if (code == HTTP_CODE_OK) {
-        total = rp.getSize();
-        rangesOk = false;
-    }
-    rp.end();
-    updaterRadioIdleForDisplay();
-    return total;
-}
-
-static void updaterWorkerFail(UpdaterDlCtx* ctx) {
-    ctx->failed = true;
-    ctx->finished = true;
-    xSemaphoreGive(ctx->doneSem);
-    Serial.printf("[DL] worker FAIL core=%d @ %u\n",
-                  xPortGetCoreID(), (unsigned)ctx->offset);
-    vTaskDelete(NULL);
-}
-
-// Runs on WIFI_DL_CORE (0): HTTP only. Publishes live offset; never waits on UI.
-static void updaterDlWorkerTask(void* arg) {
-    UpdaterDlCtx* ctx = (UpdaterDlCtx*)arg;
-    Serial.printf("[DL] worker START core=%d chunk=%d\n", xPortGetCoreID(), WIFI_DL_CHUNK);
-
-    const char* collect[] = { "Content-Length", "Accept-Ranges", "Content-Range" };
-    size_t offset = 0;
-
-    updaterRadioWakeForBurst();
-
-    if (ctx->rangesOk) {
-        while (offset < (size_t)ctx->total) {
-            size_t end = offset + WIFI_DL_CHUNK - 1;
-            if (end >= (size_t)ctx->total) end = ctx->total - 1;
-            size_t want = end - offset + 1;
-
-            HTTPClient http;
-            http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-            http.setTimeout(20000);
-            http.begin(ctx->url);
-            http.collectHeaders(collect, 3);
-            char rangeHdr[48];
-            snprintf(rangeHdr, sizeof(rangeHdr), "bytes=%u-%u",
-                     (unsigned)offset, (unsigned)end);
-            http.addHeader("Range", rangeHdr);
-
-            int code = http.GET();
-            bool ok = false;
-            if (code == HTTP_CODE_PARTIAL_CONTENT) {
-                int sz = http.getSize();
-                if (sz <= 0) sz = (int)want;
-                if (sz > (int)want) sz = (int)want;
-                ok = updaterReadBody(http, ctx->buf + offset, sz, ctx, offset);
-                if (ok) offset = ctx->offset;
-            } else if (code == HTTP_CODE_OK && offset == 0) {
-                Serial.printf("[DL] core%d Range ignored — one-shot\n", xPortGetCoreID());
-                int sz = http.getSize();
-                if (sz <= 0) sz = ctx->total;
-                ok = updaterReadBody(http, ctx->buf, sz, ctx, 0);
-                if (ok) offset = ctx->offset;
-            } else {
-                Serial.printf("[DL] HTTP %d unexpected\n", code);
+        if (_total > 0) {
+            int pct = (int)((_written * 100) / (size_t)_total);
+            if (pct != _lastPct) {
+                _lastPct = pct;
+                updaterPaintProgress(
+                    _written,
+                    (size_t)_total,
+                    "Downloading"
+                );
             }
-            http.end();
+        } else if (_written - _lastDrawn >= 65536) {
+            _lastDrawn = _written;
+            updaterPaintUnknownProgress(_written);
+        }
 
-            if (!ok) {
-                updaterWorkerFail(ctx);
-                return;
-            }
-            ctx->offset = offset;
-            if (offset >= (size_t)ctx->total) break;
-        }
-    } else {
-        HTTPClient http;
-        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-        http.setTimeout(60000);
-        http.begin(ctx->url);
-        Serial.println("[DL] GET full (no Range)");
-        int code = http.GET();
-        Serial.printf("[DL] HTTP %d\n", code);
-        bool ok = false;
-        if (code == HTTP_CODE_OK) {
-            int sz = http.getSize();
-            if (sz <= 0) sz = ctx->total;
-            ok = updaterReadBody(http, ctx->buf, sz, ctx, 0);
-            if (ok) offset = ctx->offset;
-        }
-        http.end();
-
-        if (!ok) {
-            updaterWorkerFail(ctx);
-            return;
-        }
+        return n;
     }
 
-    ctx->offset = (size_t)ctx->total;
-    ctx->finished = true;
-    xSemaphoreGive(ctx->doneSem);
-    Serial.printf("[DL] worker DONE core=%d\n", xPortGetCoreID());
-    vTaskDelete(NULL);
-}
+    size_t bytesWritten() const {
+        return _written;
+    }
 
-// Streams HTTP response data to the SD file.
+private:
+    File& _file;
+    int _total;
+    size_t _written = 0;
+    size_t _lastDrawn = 0;
+    int _lastPct = -1;
+};
+
+// Downloads one file directly to SD.
 //
-// IMPORTANT: Use HTTPClient::writeToStream() instead of reading getStreamPtr()
-// directly. HTTPClient handles Transfer-Encoding: chunked and consumes the
-// terminal chunk. Reading the raw socket directly can wait forever on a
-// keep-alive connection after the response body has already ended.
+// HTTPClient::writeToStream() handles Transfer-Encoding: chunked and consumes
+// the terminal chunk. Reading getStreamPtr() directly can miss the end of a
+// chunked body when the server keeps the connection alive.
 bool updaterDownloadFile(const char* urlIn, const char* destPath) {
     // Force http:// because TLS does not fit in RAM on this build.
-    // Do not follow redirects into HTTPS.
+    // Redirects are disabled to avoid following a redirect into HTTPS.
     char url[300];
-    if (strncmp(urlIn, "https://", 8) == 0)
+
+    if (strncmp(urlIn, "https://", 8) == 0) {
         snprintf(url, sizeof(url), "http://%s", urlIn + 8);
-    else
+    } else {
         snprintf(url, sizeof(url), "%s", urlIn);
+    }
 
     Serial.printf("[DL] stream core=%d url=%s\n", xPortGetCoreID(), url);
-    updaterPaintProgress(0, 1, "Starting  ");
+    updaterPaintProgress(0, 1, "Starting");
 
     ensureDirs(destPath);
-    if (SD.exists(destPath)) SD.remove(destPath);   // clean overwrite
+
+    if (SD.exists(destPath)) {
+        SD.remove(destPath);
+    }
 
     File f = SD.open(destPath, FILE_WRITE);
     if (!f) {
@@ -342,6 +266,11 @@ bool updaterDownloadFile(const char* urlIn, const char* destPath) {
         return false;
     }
 
+    const char* responseHeaders[] = {
+        "Transfer-Encoding"
+    };
+    http.collectHeaders(responseHeaders, 1);
+
     int code = http.GET();
     Serial.printf("[DL] HTTP %d\n", code);
 
@@ -360,38 +289,55 @@ bool updaterDownloadFile(const char* urlIn, const char* destPath) {
     String transferEncoding = http.header("Transfer-Encoding");
 
     Serial.printf("[DL] Content-Length=%d Transfer-Encoding=%s\n",
-                  total, transferEncoding.length()
+                  total,
+                  transferEncoding.length()
                       ? transferEncoding.c_str()
                       : "(none)");
 
-    // HTTPClient decodes chunked bodies here and returns the number of
-    // payload bytes written to the SD file.
-    int copied = http.writeToStream(&f);
+    // HTTPClient decodes chunked responses and writes their payload through
+    // this adapter, which updates the progress display during the download.
+    UpdaterProgressStream output(f, total);
+    int copied = http.writeToStream(&output);
+    size_t written = output.bytesWritten();
+
+    String copyError;
+    if (copied <= 0) {
+        copyError = http.errorToString(copied);
+    }
 
     http.end();
     f.close();
     updaterRadioRestore();
 
-    if (copied <= 0) {
+    if (copied <= 0 || written == 0) {
         Serial.printf("[DL] body copy failed: %s (%d)\n",
-                      http.errorToString(copied).c_str(), copied);
+                      copyError.c_str(), copied);
         statusLine("Download", "BODY READ FAILED", C_RED);
         return false;
     }
 
-    if (total > 0 && copied != total) {
-        Serial.printf("[DL] size mismatch got=%d want=%d\n", copied, total);
+    if ((size_t)copied != written) {
+        Serial.printf("[DL] write mismatch copied=%d written=%u\n",
+                      copied, (unsigned)written);
+        statusLine("Download", "SD WRITE FAILED", C_RED);
+        return false;
+    }
+
+    if (total > 0 && written != (size_t)total) {
+        Serial.printf("[DL] size mismatch got=%u want=%d\n",
+                      (unsigned)written, total);
         statusLine("Download", "SIZE MISMATCH", C_RED);
         return false;
     }
 
     updaterPaintProgress(
-        (size_t)copied,
-        (total > 0) ? (size_t)total : (size_t)copied,
+        written,
+        (total > 0) ? (size_t)total : written,
         "Downloaded"
     );
 
-    Serial.printf("Saved %s (%d bytes)\n", destPath, copied);
+    Serial.printf("Saved %s (%u bytes)\n",
+                  destPath, (unsigned)written);
     return true;
 }
 
@@ -402,7 +348,6 @@ void runUpdater() {
     fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START, C_BLACK);
     statusY = MENU_Y_START;
     statusLine("UPDATE / INSTALL EMULATORS", C_YELLOW);
-    //statusLine("Test: DL@core0 UI@core1", C_CYAN);
 
     statusLine("WiFi Connecting...", C_YELLOW);
     if (!updaterWifiConnect()) {
@@ -416,24 +361,39 @@ void runUpdater() {
 
     statusLine("Getting emulator list...", C_YELLOW);
     updaterRadioWakeForBurst();
+
     HTTPClient http;
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.begin(EMUL_JSON_URL);
+
+    if (!http.begin(EMUL_JSON_URL)) {
+        http.end();
+        updaterRadioRestore();
+        statusLine("ERROR", "HTTP begin failed", C_RED);
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        return;
+    }
+
     int code = http.GET();
     Serial.printf("[JSON] HTTP %d\n", code);
+
     String jsonStr;
-    if (code == 200) jsonStr = http.getString();
+    if (code == HTTP_CODE_OK) {
+        jsonStr = http.getString();
+    }
+
     http.end();
     updaterRadioIdleForDisplay();
     delay(20);
 
-    if (code != 200) {
+    if (code != HTTP_CODE_OK) {
         updaterRadioRestore();
         statusLine("ERROR", "Failed to get JSON!", C_RED);
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
         return;
     }
+
     statusLine("List", "OK", C_GREEN);
 
     DynamicJsonDocument doc(32768);
@@ -453,12 +413,15 @@ void runUpdater() {
         const char* version = doc[i]["version"];
         JsonArray files     = doc[i]["files"];
 
-        char folderPath[80], verPath[100];
+        char folderPath[80];
+        char verPath[100];
+
         snprintf(folderPath, sizeof(folderPath), "/%s", folder);
         snprintf(verPath, sizeof(verPath), "/%s/version.txt", folder);
 
         bool folderExists = SD.exists(folderPath);
         String localVersion = "0.0.0";
+
         if (folderExists && SD.exists(verPath)) {
             File vf = SD.open(verPath);
             if (vf) {
@@ -486,12 +449,14 @@ void runUpdater() {
         }
 
         char question[80];
-        if (isNew)
-            snprintf(question, sizeof(question), "Install %s v%s? Y/N",
-                     name, version);
-        else
-            snprintf(question, sizeof(question), "Update %s %s->%s? Y/N",
+        if (isNew) {
+            snprintf(question, sizeof(question),
+                     "Install %s v%s? Y/N", name, version);
+        } else {
+            snprintf(question, sizeof(question),
+                     "Update %s %s->%s? Y/N",
                      name, localVersion.c_str(), version);
+        }
 
         statusLine(question, C_YELLOW);
 
@@ -499,7 +464,9 @@ void runUpdater() {
         ps2_flush();
 
         uint8_t key = 0;
-        while (key == 0) key = ps2_get_key();
+        while (key == 0) {
+            key = ps2_get_key();
+        }
 
         // 0x35 = make code for 'Y' (PS/2 set 2, US)
         if (key != 0x35) {
@@ -508,7 +475,10 @@ void runUpdater() {
         }
 
         statusLine("Starting download...", C_CYAN);
-        if (!folderExists) SD.mkdir(folderPath);
+
+        if (!folderExists) {
+            SD.mkdir(folderPath);
+        }
 
         int fileCount = files.size();
         bool allOk = true;
@@ -518,7 +488,8 @@ void runUpdater() {
             const char* dest = files[j]["dest"];
 
             char destPath[160];
-            snprintf(destPath, sizeof(destPath), "/%s/%s", folder, dest);
+            snprintf(destPath, sizeof(destPath),
+                     "/%s/%s", folder, dest);
 
             if (statusY > VRES - 48) {
                 fillRect(0, MENU_Y_START + 12, HRES,
@@ -528,24 +499,30 @@ void runUpdater() {
 
             snprintf(updaterDlLabel, sizeof(updaterDlLabel),
                      "%s (%d/%d)", dest, j + 1, fileCount);
+
             updaterDlLabelY = statusY;
             updaterDlBarY = updaterDlLabelY + 12;
+
             fillRect(0, updaterDlLabelY, HRES, 32, C_BLACK);
-            drawString(10, updaterDlLabelY, updaterDlLabel, C_CYAN, C_BLACK);
+            drawString(10, updaterDlLabelY,
+                       updaterDlLabel, C_CYAN, C_BLACK);
             statusY = updaterDlBarY;
 
             // Codifica espaços no URL.
             String urlEncoded = String(url);
             urlEncoded.replace(" ", "%20");
-            if (!updaterDownloadFile(urlEncoded.c_str(), destPath))
+
+            if (!updaterDownloadFile(urlEncoded.c_str(), destPath)) {
                 allOk = false;
+            }
 
             statusY = updaterDlLabelY;
             updaterDlLabel[0] = '\0';
         }
 
         statusY = updaterDlBarY + 20;
-        statusLine(name, allOk ? "OK!" : "FAILED!",
+        statusLine(name,
+                   allOk ? "OK!" : "FAILED!",
                    allOk ? C_GREEN : C_RED);
     }
 
