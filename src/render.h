@@ -124,7 +124,7 @@ static const int MENU_BAR_X = 8;        // list starts near left edge
 // Emulator preview image (image.bmp inside the emulator folder)
 static const int EMU_IMG_W = 160;
 static const int EMU_IMG_H = 160;
-static const int EMU_IMG_X = HRES - EMU_IMG_W;      // right side: 320-180 = 140
+static const int EMU_IMG_X = HRES - EMU_IMG_W - 12;      // right side: 320-180 = 140
 static const int EMU_IMG_Y = MENU_Y_START - 10;
 //static const int EMU_IMG_Y = 45;
 static const int MENU_COUNTER_CLEAR_W = 5 * 6;  // room for "99/99"
@@ -212,22 +212,23 @@ bool drawEmulatorImage(const char* folderPath) {
 
     uint32_t headerSize = header[14] | (header[15] << 8) | (header[16] << 16) | (header[17] << 24);
 
-
     bool topDown = false;
     if (h < 0) { h = -h; topDown = true; }   // negative height = top-down BMP
 
     int drawW = (w < EMU_IMG_W) ? w : EMU_IMG_W;
     int drawH = (h < EMU_IMG_H) ? h : EMU_IMG_H;
+    if (EMU_IMG_X + drawW > HRES) drawW = HRES - EMU_IMG_X;   // never write past the screen
+    if (EMU_IMG_Y + drawH > VRES) drawH = VRES - EMU_IMG_Y;
 
-    // Precompute Canvas colors per BMP palette entry (8-bit) — avoids per-pixel RGB math.
-    RGB888 palColor[256];
+    // Precompute a raw framebuffer byte per 8-bit palette entry (fast path, 64-color BMPs).
+    uint8_t rawPal[256];
     if (bpp == 8) {
         uint32_t palOffset = 14 + headerSize;       // file header (14) + DIB header
         f.seek(palOffset);
         for (int i = 0; i < 256; i++) {
             uint8_t e[4];
             if (f.read(e, 4) != 4) break;
-            palColor[i] = RGB888(e[2], e[1], e[0]);  // BMP palette entry is B,G,R,0
+            rawPal[i] = DisplayController.createRawPixel(RGB222(e[2] >> 6, e[1] >> 6, e[0] >> 6)); // e=B,G,R,0
         }
     }
 
@@ -242,31 +243,24 @@ bool drawEmulatorImage(const char* folderPath) {
     f.read(pix, pixBytes);
     f.close();
 
-    // Draw same-color horizontal runs as single lines. Abort early if the user presses
-    // a key — navigation must never wait for the image to finish painting.
+    // Write straight to the framebuffer (no Canvas queue). Abort on keypress so
+    // navigation never waits for the image.
     for (int ry = 0; ry < drawH; ry++) {
         if (ps2_available()) { free(pix); return false; }  // key arrived: stop, retry later
 
         int srcRow = topDown ? ry : (h - 1 - ry);
         uint8_t* row = pix + (uint32_t)srcRow * rowSize;
-
         int y = EMU_IMG_Y + ry;
-        int rx = 0;
-        while (rx < drawW) {
-            RGB888 c = (bpp == 8)
-                ? palColor[row[rx]]
-                : RGB888(row[rx*3 + 2], row[rx*3 + 1], row[rx*3 + 0]);
-            int runStart = rx;
-            rx++;
-            while (rx < drawW) {
-                RGB888 c2 = (bpp == 8)
-                    ? palColor[row[rx]]
-                    : RGB888(row[rx*3 + 2], row[rx*3 + 1], row[rx*3 + 0]);
-                if (!(c2 == c)) break;
-                rx++;
+
+        if (bpp == 8) {
+            for (int rx = 0; rx < drawW; rx++)
+                DisplayController.setRawPixel(EMU_IMG_X + rx, y, rawPal[row[rx]]);
+        } else {
+            for (int rx = 0; rx < drawW; rx++) {
+                uint8_t rawb = DisplayController.createRawPixel(
+                    RGB222(row[rx*3+2] >> 6, row[rx*3+1] >> 6, row[rx*3+0] >> 6));
+                DisplayController.setRawPixel(EMU_IMG_X + rx, y, rawb);
             }
-            cv.setPenColor(c);
-            cv.drawLine(EMU_IMG_X + runStart, y, EMU_IMG_X + rx - 1, y);
         }
     }
 

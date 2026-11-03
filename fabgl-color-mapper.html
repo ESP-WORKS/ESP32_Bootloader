@@ -78,13 +78,22 @@
   <label class="btn">Abrir imagem…<input type="file" id="fileIn" accept=".bmp,.png,.jpg,.jpeg,.gif,.webp,image/*"></label>
   <span class="rs">
     <label><input type="checkbox" id="rsOn" checked> Reduzir para</label>
-    <input type="number" id="rsW" value="180" min="1" max="2048"> ×
-    <input type="number" id="rsH" value="180" min="1" max="2048">
+    <input type="number" id="rsW" value="160" min="1" max="2048"> ×
+    <input type="number" id="rsH" value="160" min="1" max="2048">
     <select id="rsMode" title="Manter proporção: cabe dentro do tamanho. Esticar: tamanho exato.">
       <option value="fit">manter proporção + bordas pretas</option><option value="stretch">esticar</option>
     </select>
     <select id="rsSmooth" title="Suave: bom para fotos/ilustrações. Pixel: bom para pixel art.">
       <option value="smooth">suave</option><option value="pixel">pixel</option>
+    </select>
+  </span>
+  <span class="rs">
+    <label for="dither">Dithering</label>
+    <select id="dither" title="Bayer 2×2 simula tons intermediários com um padrão fixo de pixels.">
+      <option value="none">desativado</option>
+      <option value="bayer" selected>Bayer 2×2</option>
+      <option value="floyd">Floyd–Steinberg</option>
+      <option value="atkinson">Atkinson</option>
     </select>
   </span>
   <span class="rs">
@@ -133,7 +142,7 @@
       Clique no preview para selecionar a cor de origem daquele pixel.<br>
       Cores com <span style="color:var(--accent)">●</span> foram escolhidas manualmente e não mudam no Auto.<br>
       Cores com ponto branco no canto estão em uso.<br><br>
-      BMP salvo: 8 bits, paleta de 64 cores. Cada byte = <code>R | G&lt;&lt;2 | B&lt;&lt;4</code>
+      BMP salvo: 8 bits, paleta de 64 cores; o dithering selecionado é aplicado ao salvar. Cada byte = <code>R | G&lt;&lt;2 | B&lt;&lt;4</code>
       (igual a <code>fabgl::RGB222</code>). Para <code>RGBA2222</code> opaco: <code>byte | 0xC0</code>.
     </div>
   </aside>
@@ -168,6 +177,62 @@ function nearest(c) {
   let best = 0, bd = Infinity;
   for (const f of FAB) { const d = dist(c, f); if (d < bd) { bd = d; best = f.i; } }
   return best;
+}
+
+// Bayer 2×2 escolhe entre os dois níveis RGB222 adjacentes em cada canal.
+// O padrão balanceado [0 2; 3 1] alterna os níveis para simular cores intermediárias.
+function bayerChannel(value, threshold) {
+  const levels = [0, 85, 170, 255];
+  let lo = 0;
+  while (lo < 3 && value > levels[lo + 1]) lo++;
+  if (lo === 3) return 3;
+  const fraction = (value - levels[lo]) / (levels[lo + 1] - levels[lo]);
+  return lo + (fraction > threshold ? 1 : 0);
+}
+
+// Converte cada pixel para FabGL; Bayer é fixo no espaço da imagem.
+// Mapeamentos manuais continuam forçados nos modos com dithering.
+function outputIndices() {
+  const out = new Uint8Array(img.idx.length), mode = $('dither').value;
+  if (mode === 'none') {
+    for (let i = 0; i < out.length; i++) out[i] = map[img.idx[i]];
+    return out;
+  }
+  const w = img.w, h = img.h;
+  if (mode === 'bayer') {
+    const matrix = [0, 2, 3, 1];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const p = y * w + x, sid = img.idx[p];
+      if (manual[sid]) { out[p] = map[sid]; continue; }
+      const src = img.pixelRGBA
+        ? { r: img.pixelRGBA[p * 4], g: img.pixelRGBA[p * 4 + 1], b: img.pixelRGBA[p * 4 + 2] }
+        : img.colors[sid];
+      const threshold = (matrix[(y & 1) * 2 + (x & 1)] + 0.5) / 4;
+      const R = bayerChannel(src.r, threshold), G = bayerChannel(src.g, threshold), B = bayerChannel(src.b, threshold);
+      out[p] = R | (G << 2) | (B << 4);
+    }
+    return out;
+  }
+  const errors = new Float32Array(out.length * 3);
+  const spread = mode === 'atkinson'
+    ? [[1,0,1/8],[2,0,1/8],[-1,1,1/8],[0,1,1/8],[1,1,1/8],[0,2,1/8]]
+    : [[1,0,7/16],[-1,1,3/16],[0,1,5/16],[1,1,1/16]];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const p = y * w + x, sid = img.idx[p], src = img.colors[sid], e = p * 3;
+    const c = { r: Math.max(0, Math.min(255, src.r + errors[e])),
+      g: Math.max(0, Math.min(255, src.g + errors[e + 1])),
+      b: Math.max(0, Math.min(255, src.b + errors[e + 2])) };
+    const fi = manual[sid] ? map[sid] : nearest(c), f = FAB[fi];
+    out[p] = fi;
+    const er = c.r - f.r, eg = c.g - f.g, eb = c.b - f.b;
+    for (const [dx,dy,k] of spread) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+      const q = (ny * w + nx) * 3;
+      errors[q] += er * k; errors[q + 1] += eg * k; errors[q + 2] += eb * k;
+    }
+  }
+  return out;
 }
 
 // ---------- State ----------
@@ -331,7 +396,7 @@ function targetSize(w, h) {
 
 // ---------- BMP writer (8 bpp, paleta de 64 cores RGB222) ----------
 function writeBMP8() {
-  const { w, h, idx } = img;
+  const { w, h, idx } = img, out = outputIndices();
   const stride = Math.floor((8 * w + 31) / 32) * 4;
   const palSize = NFAB * 4, off = 14 + 40 + palSize, size = off + stride * h;
   const buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf);
@@ -343,7 +408,7 @@ function writeBMP8() {
   FAB.forEach((f, i) => { const o = 54 + i * 4; u8[o] = f.b; u8[o + 1] = f.g; u8[o + 2] = f.r; u8[o + 3] = 0; });
   for (let y = 0; y < h; y++) {
     const row = off + (h - 1 - y) * stride;
-    for (let x = 0; x < w; x++) u8[row + x] = map[idx[y * w + x]];
+    for (let x = 0; x < w; x++) u8[row + x] = out[y * w + x];
   }
   return buf;
 }
@@ -397,10 +462,11 @@ function applyZoom() {
 function renderPreview() {
   if (!img) return;
   const ctx = cPrev.getContext('2d'), id = ctx.createImageData(img.w, img.h), d = id.data;
+  const out = outputIndices();
   const hl = $('highlight').checked && sel >= 0;
   for (let i = 0; i < img.idx.length; i++) {
     const s = img.idx[i];
-    let f = FAB[map[s]], r = f.r, g = f.g, b = f.b;
+    let f = FAB[out[i]], r = f.r, g = f.g, b = f.b;
     if (hl && s === sel && blink) { r = 255 - r; g = 255 - g; b = 255 - b; }
     d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
   }
@@ -494,15 +560,16 @@ async function loadFile(file) {
     const t = targetSize(p.w, p.h), maxC = +$('maxColors').value, pad = padSize();
     const fw = t ? t.w : p.w, fh = t ? t.h : p.h;
     const needPad = pad && (fw !== pad.w || fh !== pad.h);
-    let res;
+    let res, pixelRGBA = null;
     if (!t && !needPad && p.idx && p.colors.length <= maxC) res = p;   // BMP com paleta já ok: cores exatas
     else {
       let c = p.canvas || rgbaCanvas(p.w, p.h, p.rgba || indexedToRGBA(p));
       if (t) c = resizeCanvas(c, t.w, t.h, $('rsSmooth').value === 'smooth');
       if (needPad) c = padCanvas(c, pad.w, pad.h);
-      res = fromRGBA(c.width, c.height, c.getContext('2d').getImageData(0, 0, c.width, c.height).data, maxC);
+      pixelRGBA = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      res = fromRGBA(c.width, c.height, pixelRGBA, maxC);
     }
-    img = { ...res, bpp: p.bpp, ow: p.w, oh: p.h, name: file.name.replace(/\.[^.]+$/, '') };
+    img = { ...res, pixelRGBA, bpp: p.bpp, ow: p.w, oh: p.h, name: file.name.replace(/\.[^.]+$/, '') };
     map = new Array(img.colors.length).fill(0); manual = new Array(img.colors.length).fill(false);
     order = img.colors.map((_, i) => i).sort((a, b) => img.colors[b].count - img.colors[a].count);
     sel = -1;
@@ -528,8 +595,9 @@ views.addEventListener('drop', e => {
 for (const id of ['rsOn', 'rsW', 'rsH', 'rsMode', 'rsSmooth', 'maxColors'])
   $(id).addEventListener('change', () => { if (lastFile) loadFile(lastFile); });
 
+$('dither').onchange = renderPreview;
 $('btnAuto').onclick = () => autoMap(true);
-$('btnSaveBmp').onclick = () => saveFile(writeBMP8(), img.name + '_fabgl.bmp', 'image/bmp', 'Bitmap', '.bmp');
+$('btnSaveBmp').onclick = () => saveFile(writeBMP8(), img.name + '.bmp', 'image/bmp', 'Bitmap', '.bmp');
 
 $('zoom').onchange = applyZoom;
 $('showOrig').onchange = () => { if (img) $('vOrig').hidden = !$('showOrig').checked; };

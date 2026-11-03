@@ -1,1 +1,1 @@
-.MOD player for ROBGO stereo boards by FG1998
+.MOD player for ROBGO_RG stereo boards by FG1998
