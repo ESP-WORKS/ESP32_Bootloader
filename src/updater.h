@@ -182,13 +182,32 @@ public:
     }
 
     size_t write(const uint8_t* data, size_t size) override {
-        size_t n = _file.write(data, size);
+        // SD/SPI often returns a short or zero write when its buffer is full while
+        // WiFi is busy (big files). Retry the remainder with flush + a growing pause
+        // so a momentarily stalled card recovers instead of failing the download.
+        size_t done = 0;
+        int stall = 0;                       // consecutive no-progress writes
+        while (done < size) {
+            size_t n = _file.write(data + done, size - done);
+            done += n;
+            if (done >= size) break;
 
-        if (n != size) {
-            setWriteError();
+            if (n == 0) {
+                stall++;
+                if (stall > 200) {
+                    Serial.printf("[DL] SD write stalled: done=%u/%u\n",
+                                  (unsigned)done, (unsigned)size);
+                    setWriteError();
+                    break;
+                }
+                _file.flush();
+                delay(stall < 20 ? 2 : 10);  // back off longer the longer it stalls
+            } else {
+                stall = 0;                   // made progress, reset
+            }
         }
 
-        _written += n;
+        _written += done;
 
         if (_total > 0) {
             int pct = (int)((_written * 100) / (size_t)_total);
@@ -205,7 +224,7 @@ public:
             updaterPaintUnknownProgress(_written);
         }
 
-        return n;
+        return done;
     }
 
     size_t bytesWritten() const {
@@ -220,12 +239,8 @@ private:
     int _lastPct = -1;
 };
 
-// Downloads one file directly to SD.
-//
-// HTTPClient::writeToStream() handles Transfer-Encoding: chunked and consumes
-// the terminal chunk. Reading getStreamPtr() directly can miss the end of a
-// chunked body when the server keeps the connection alive.
-bool updaterDownloadFile(const char* urlIn, const char* destPath) {
+// One download attempt. Returns true only if the whole file landed on the SD.
+static bool updaterDownloadFileOnce(const char* urlIn, const char* destPath) {
     // Force http:// because TLS does not fit in RAM on this build.
     // Redirects are disabled to avoid following a redirect into HTTPS.
     char url[300];
@@ -294,51 +309,96 @@ bool updaterDownloadFile(const char* urlIn, const char* destPath) {
                       ? transferEncoding.c_str()
                       : "(none)");
 
-    // HTTPClient decodes chunked responses and writes their payload through
-    // this adapter, which updates the progress display during the download.
-    UpdaterProgressStream output(f, total);
-    int copied = http.writeToStream(&output);
-    size_t written = output.bytesWritten();
+    // Manual read loop with a hard idle-timeout. writeToStream() can hang forever on
+    // a half-open connection (data stops but the socket never closes), which is what
+    // made some downloads freeze. Here, if no byte arrives for IDLE_MS, we bail and
+    // the retry wrapper tries again.
+    const uint32_t IDLE_MS = 10000;      // give up a stalled read after 10s
+    WiFiClient* stream = http.getStreamPtr();
+    uint8_t buf[2048];
+    size_t written = 0;
+    int lastPct = -1;
+    uint32_t lastDataMs = millis();
+    bool ok = true;
 
-    String copyError;
-    if (copied <= 0) {
-        copyError = http.errorToString(copied);
+    while (true) {
+        // Done when we've got the whole known-size body.
+        if (total > 0 && written >= (size_t)total) break;
+
+        int avail = stream->available();
+        if (avail > 0) {
+            size_t want = sizeof(buf);
+            if (total > 0) {
+                size_t remaining = (size_t)total - written;
+                if (remaining < want) want = remaining;
+            }
+            int rd = stream->readBytes(buf, min((size_t)avail, want));
+            if (rd > 0) {
+                // Write to SD with short-write retry.
+                size_t done = 0; int stall = 0;
+                while (done < (size_t)rd) {
+                    size_t n = f.write(buf + done, rd - done);
+                    done += n;
+                    if (done >= (size_t)rd) break;
+                    if (n == 0) { if (++stall > 200) { ok = false; break; } f.flush(); delay(5); }
+                    else stall = 0;
+                }
+                if (!ok) break;
+                written += rd;
+                lastDataMs = millis();
+                if (total > 0) {
+                    int pct = (int)((written * 100) / total);
+                    if (pct != lastPct) { lastPct = pct; updaterPaintProgress(written, total, "Downloading"); }
+                }
+            }
+            yield();
+        } else {
+            if (!http.connected() && stream->available() == 0) break;  // socket closed, nothing left
+            if (millis() - lastDataMs > IDLE_MS) { ok = false; Serial.println("[DL] idle timeout"); break; }
+            delay(2);
+        }
     }
 
     http.end();
     f.close();
     updaterRadioRestore();
 
-    if (copied <= 0 || written == 0) {
-        Serial.printf("[DL] body copy failed: %s (%d)\n",
-                      copyError.c_str(), copied);
-        statusLine("Download", "BODY READ FAILED", C_RED);
+    if (!ok || written == 0) {
+        Serial.printf("[DL] download failed written=%u total=%d\n", (unsigned)written, total);
+        statusLine("Download", "DL FAILED", C_RED);
         return false;
     }
-
-    if ((size_t)copied != written) {
-        Serial.printf("[DL] write mismatch copied=%d written=%u\n",
-                      copied, (unsigned)written);
-        statusLine("Download", "SD WRITE FAILED", C_RED);
-        return false;
-    }
-
     if (total > 0 && written != (size_t)total) {
-        Serial.printf("[DL] size mismatch got=%u want=%d\n",
-                      (unsigned)written, total);
+        Serial.printf("[DL] size mismatch got=%u want=%d\n", (unsigned)written, total);
         statusLine("Download", "SIZE MISMATCH", C_RED);
         return false;
     }
 
-    updaterPaintProgress(
-        written,
-        (total > 0) ? (size_t)total : written,
-        "Downloaded"
-    );
-
-    Serial.printf("Saved %s (%u bytes)\n",
-                  destPath, (unsigned)written);
+    updaterPaintProgress(written, (total > 0) ? (size_t)total : written, "Downloaded");
+    Serial.printf("Saved %s (%u bytes)\n", destPath, (unsigned)written);
     return true;
+}
+
+// Download with retries. The server/WiFi sometimes drops a connection mid-file
+// (an incomplete body), so retry a few times before giving up.
+bool updaterDownloadFile(const char* urlIn, const char* destPath) {
+    const int MAX_TRIES = 3;
+    for (int attempt = 1; attempt <= MAX_TRIES; attempt++) {
+        if (updaterDownloadFileOnce(urlIn, destPath)) return true;
+        Serial.printf("[DL] attempt %d/%d failed, retrying...\n", attempt, MAX_TRIES);
+
+        // Repaint the download label area so retries don't stack on screen.
+        if (updaterDlLabel[0]) {
+            fillRect(0, updaterDlLabelY, HRES, 32, C_BLACK);
+            char lbl[80];
+            snprintf(lbl, sizeof(lbl), "%s  retry %d/%d", updaterDlLabel, attempt + 1, MAX_TRIES);
+            drawString(10, updaterDlLabelY, lbl, C_YELLOW, C_BLACK);
+        }
+
+        updaterRadioRestore();     // make sure the radio is awake again
+        delay(800);
+    }
+    return false;
 }
 
 void runUpdater() {

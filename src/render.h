@@ -298,20 +298,20 @@ void updateMenuSelection(int oldSelected, int newSelected,
 
 void drawMaintenanceScreen() {
     fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-    drawString(10, MENU_Y_START,       "*** MENU ***",                    C_YELLOW, C_BLACK);
-    drawString(10, MENU_Y_START +  14, "N - Clear Bootloader NVS",        C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  28, "A - Clear ALL NVS",               C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  42, "O - Clear Otadata",               C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  56, "R - Reset ESP32",                 C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  70, "D - Download Emulators / Update", C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  84, "E - Extract Firmware (Eremus)",   C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  98, "I - Show Disclaimer",             C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START + 112, "ESC/SPACE - Cancel",              C_CYAN,   C_BLACK);
-    
-    drawString(10, MENU_Y_START + 128, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
-    drawString(10, MENU_Y_START + 137, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
-    drawString(10, MENU_Y_START + 146, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra",         C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START,       "*** MENU ***",                   C_YELLOW, C_BLACK);
+    drawString(10, MENU_Y_START +  11, "N - Clear Bootloader NVS",       C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  22, "A - Clear ALL NVS",              C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  33, "O - Clear Otadata",              C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  44, "R - Reset ESP32",                C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  55, "D - Download / Update Emulators", C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  66, "E - Extract Firmware (Eremus)",  C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  77, "I - Show Disclaimer",            C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  88, "C - Reset Wifi Credentials",     C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START +  99, "ESC/SPACE - Cancel",             C_CYAN,   C_BLACK);
 
+    drawString(10, MENU_Y_START + 120, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 129, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 138, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra",         C_WHITE, C_BLACK, &fabgl::FONT_5x7);
 }
 
 void showMaintenanceMenu() {
@@ -321,6 +321,15 @@ void showMaintenanceMenu() {
     while (true) {
         uint8_t key = ps2_get_key();
         if (key == 0) continue;
+
+        // D - Download / Update Emulators: runs the WiFi/HTTP updater directly.
+        if (key == KEY_D_KEY) {
+            runUpdater();
+            ps2_flush();
+            statusY = statusY_original;
+            drawMaintenanceScreen();
+            continue;
+        }
 
         // I - Show Disclaimer (re-display; Y/N just closes, no reset).
         if (key == KEY_I_KEY) {
@@ -337,8 +346,9 @@ void showMaintenanceMenu() {
         else if (key == KEY_A_KEY) { msg = "Clear ALL NVS?";         done = "ALL NVS cleared!"; }
         else if (key == KEY_O_KEY) { msg = "Clear Otadata?";         done = "Otadata cleared!"; }
         else if (key == KEY_R_KEY) { msg = "Reset ESP32?";           done = "Resetting..."; }
-        else if (key == KEY_D_KEY) { msg = "Download Emulators?";    done = "Download complete!"; }
+
         else if (key == KEY_E_KEY) { msg = "Extract Firmware?";      done = "Firmware extracted!"; }
+        else if (key == KEY_C_KEY) { msg = "Reset WiFi Credentials?"; done = "WiFi reset! Restarting..."; }
         else if (key == KEY_ESC || key == KEY_SPACE) { Serial.println("ESC pressed");  break; }
 
         if (!msg) continue;
@@ -368,15 +378,6 @@ void showMaintenanceMenu() {
             shutdownForReboot();
             ESP.restart();
         }
-        else if (key == KEY_D_KEY) {
-            Serial.println("Download selected");
-            runUpdater();
-            ps2_flush();
-            statusLine("Status", "Press any key to reboot", C_YELLOW);
-            while (ps2_get_key() == 0);
-            shutdownForReboot();
-            ESP.restart();
-        }
         else if (key == KEY_E_KEY) {
             Serial.println("Extract Firmware selected");
             runExtractFirmware();
@@ -384,6 +385,11 @@ void showMaintenanceMenu() {
             statusY = statusY_original;
             drawMaintenanceScreen();
             continue;
+        }
+        else if (key == KEY_C_KEY) {
+            Serial.println("Reset WiFi credentials selected");
+            if (SD.exists("/wificonfig.rc")) SD.remove("/wificonfig.rc");
+            // falls through to the "reboot" screen below
         }
 
         fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);

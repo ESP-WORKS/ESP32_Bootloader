@@ -47,6 +47,7 @@
 #define KEY_E_KEY   0x24
 #define KEY_P_KEY   0x4D
 #define KEY_I_KEY   0x43
+#define KEY_C_KEY   0x21
 
 // Extended keys (prefixed 0xE0 on the wire) are returned by ps2_get_key() with bit 0x80 set.
 // Arrow up/down also come extended on most keyboards, so accept both forms.
@@ -58,7 +59,7 @@
 #define KEY_PGUP    (0x7D | 0x80)   // page up
 
 #define SPEAKER_PIN 25
-#define BL_VERSION "0.8.4"           // numeric X.Y.Z
+#define BL_VERSION "0.8.5"           // numeric X.Y.Z
 #define VERSION "ver " BL_VERSION    // display string
 
 // Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.
@@ -153,3 +154,4 @@ void scanFolders();
 #include "updater.h"
 #include "extract.h"
 #include "disclaimer.h"
+#include "wifisetup.h"

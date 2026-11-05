@@ -584,6 +584,13 @@ void setup() {
     // First-run legal disclaimer — shows until the user accepts (accepted=1 in bootl.rc).
     showDisclaimerIfNeeded();
 
+    // First-run WiFi setup — if /wificonfig.rc is missing, scan networks and let the
+    // user pick one + type the password, then save it. Needs PS/2 ready.
+    ps2_init();
+    delay(200);
+    ps2_flush();
+    wifiSetupIfNeeded();
+
     // --- Modo 1: firmware.bin + version.txt na raiz ---
     if (SD.exists(FIRMWARE_FILE) && SD.exists(VERSION_FILE)) {
         char versionName[64] = "firmware_sem_versao";
@@ -613,29 +620,43 @@ void setup() {
     scanFolders();
 
     if (menuCount == 0) {
-        statusLine("Status", "No emulators found!", C_RED);
-        
         ps2_init();
         delay(500);
         ps2_flush();
 
-        while (true) {
-            if (!ps2_available()) {
-                delay(1);
-                continue;
-            }
-            uint8_t key = ps2_get_key();
-            if (key == 0) continue;
-            if (key == KEY_F1 || key == KEY_1) {
+        // No emulators on the SD yet. Offer to download them straight away; the user
+        // can also open the maintenance menu (F1). Re-scan after each attempt.
+        while (menuCount == 0) {
+            fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START, C_BLACK);
+            statusY = MENU_Y_START;
+            statusLine("NO EMULATORS FOUND", C_RED);
+            statusLine("(F1 = maintenance menu)", C_CYAN);
+            statusLine("Download emulators now? Y/N", C_YELLOW);
+  
+
+            ps2_flush();
+            uint8_t key = 0;
+            while (key == 0) key = ps2_get_key();
+
+            if (key == 0x35) {                       // Y -> run the WiFi/HTTP updater
+                runUpdater();
+                ps2_flush();
+                fillRect(0, 0, HRES, VRES, C_BLACK);
+                drawHeader();
+                scanFolders();                       // pick up whatever was installed
+            } else if (key == KEY_F1 || key == KEY_1) {
                 showMaintenanceMenu();
                 ps2_flush();
                 fillRect(0, 0, HRES, VRES, C_BLACK);
                 drawHeader();
-            } else if (key == KEY_F2 || key == KEY_2) {
-                runUpdater();
-                ps2_flush();
+                scanFolders();
             }
+            // any other key: loop and ask again
         }
+
+        // Emulators now exist — fall through to the normal menu below.
+        fillRect(0, 0, HRES, VRES, C_BLACK);
+        drawHeader();
     }
 
     int selected = runMenu();
