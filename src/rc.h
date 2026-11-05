@@ -37,6 +37,14 @@ extern int kbdConfigIdx;
 // Pino do magic button. Lido do bootl.rc (chave magicb=). Default 36.
 extern int magicBtnPin;
 
+// Versão do bootloader instalada, lida da chave version= do bootl.rc.
+// Usada pela auto-atualização para comparar com a versão do servidor.
+// Fica no SD (não na NVS) para sobreviver a "Clear NVS" e permitir edição manual.
+extern String blInstalledVersion;
+
+// Flag de aceite do disclaimer (chave accepted= do bootl.rc). 1 = já aceitou.
+extern int blAccepted;
+
 // ---------------------------------------------------------------------------
 // Parse simples de "chave=valor\n"
 // Retorna true se a chave foi encontrada; escreve o valor em outVal.
@@ -61,9 +69,12 @@ static bool rcParseLine(const char* line, const char* key, char* outVal, size_t 
 // conhecida, usa C1 como default e cria o arquivo.
 // Deve ser chamado APÓS o SD estar montado.
 // ---------------------------------------------------------------------------
+void saveRC();   // forward decl — defined below
+
 void loadRC() {
     int dat = -1, clk = -1;
     bool found = false;
+    bool hadVersionKey = false;
 
     File f = SD.open(RC_FILE, FILE_READ);
     if (f) {
@@ -78,14 +89,19 @@ void loadRC() {
             line[len] = '\0';
             if (len == 0) continue;
 
-            char val[16];
-            if (rcParseLine(line, "kbddat", val, sizeof(val))) dat = atoi(val);
-            if (rcParseLine(line, "kbdclk", val, sizeof(val))) clk = atoi(val);
+            char val[32];
+            if (rcParseLine(line, "kbddat",  val, sizeof(val))) dat = atoi(val);
+            if (rcParseLine(line, "kbdclk",  val, sizeof(val))) clk = atoi(val);
             if (rcParseLine(line, "magicb",  val, sizeof(val))) magicBtnPin = atoi(val);
+            if (rcParseLine(line, "version", val, sizeof(val))) { blInstalledVersion = String(val); hadVersionKey = true; }
+            if (rcParseLine(line, "accepted", val, sizeof(val))) blAccepted = atoi(val);
         }
         f.close();
         found = true;
     }
+
+    // Se a chave version não estava no arquivo, assume a versão compilada.
+    if (blInstalledVersion.length() == 0) blInstalledVersion = String(BL_VERSION);
 
     // Procura a config que bate com dat/clk lidos
     int idx = 0;  // default C1
@@ -102,10 +118,12 @@ void loadRC() {
     ps2DatPin    = KBD_CONFIGS[idx].dat;
     ps2ClkPin    = KBD_CONFIGS[idx].clk;
 
-    Serial.printf("RC: %s  (dat=%d clk=%d magicb=%d no arquivo)\n",
-                  KBD_CONFIGS[idx].label, dat, clk, magicBtnPin);
+    Serial.printf("RC: %s  (dat=%d clk=%d magicb=%d version=%s)\n",
+                  KBD_CONFIGS[idx].label, dat, clk, magicBtnPin,
+                  blInstalledVersion.c_str());
+    Serial.printf("RC: found=%d hadVersionKey=%d\n", (int)found, (int)hadVersionKey);
 
-    // Se o arquivo não existia, cria com C1
+    // Se o arquivo não existia, cria com C1 + version compilada
     if (!found) {
         Serial.println("RC: bootl.rc nao encontrado, criando com C1");
         File wf = SD.open(RC_FILE, FILE_WRITE);
@@ -113,8 +131,13 @@ void loadRC() {
             wf.printf("kbddat=%d\n", KBD_CONFIGS[0].dat);
             wf.printf("kbdclk=%d\n", KBD_CONFIGS[0].clk);
             wf.printf("magicb=%d\n", magicBtnPin);
+            wf.printf("version=%s\n", blInstalledVersion.c_str());
             wf.close();
         }
+    } else if (!hadVersionKey) {
+        // Arquivo existia mas sem a chave version: adiciona preservando o resto.
+        Serial.println("RC: adicionando version= ao bootl.rc existente");
+        saveRC();
     }
 }
 
@@ -126,7 +149,7 @@ void saveRC() {
     // 1. Lê todas as linhas existentes (para preservar chaves desconhecidas)
     char lines[RC_MAX_LINES][RC_LINE_LEN];
     int  lineCount = 0;
-    bool hadDat = false, hadClk = false, hadMagic = false;
+    bool hadDat = false, hadClk = false, hadMagic = false, hadVersion = false, hadAccepted = false;
 
     File rf = SD.open(RC_FILE, FILE_READ);
     if (rf) {
@@ -157,6 +180,12 @@ void saveRC() {
         } else if (rcParseLine(lines[i], "magicb", val, sizeof(val))) {
             snprintf(lines[i], RC_LINE_LEN, "magicb=%d", magicBtnPin);
             hadMagic = true;
+        } else if (rcParseLine(lines[i], "version", val, sizeof(val))) {
+            snprintf(lines[i], RC_LINE_LEN, "version=%s", blInstalledVersion.c_str());
+            hadVersion = true;
+        } else if (rcParseLine(lines[i], "accepted", val, sizeof(val))) {
+            snprintf(lines[i], RC_LINE_LEN, "accepted=%d", blAccepted);
+            hadAccepted = true;
         }
     }
 
@@ -167,6 +196,10 @@ void saveRC() {
         snprintf(lines[lineCount++], RC_LINE_LEN, "kbdclk=%d", KBD_CONFIGS[kbdConfigIdx].clk);
     if (!hadMagic && lineCount < RC_MAX_LINES)
         snprintf(lines[lineCount++], RC_LINE_LEN, "magicb=%d", magicBtnPin);
+    if (!hadVersion && lineCount < RC_MAX_LINES)
+        snprintf(lines[lineCount++], RC_LINE_LEN, "version=%s", blInstalledVersion.c_str());
+    if (!hadAccepted && lineCount < RC_MAX_LINES)
+        snprintf(lines[lineCount++], RC_LINE_LEN, "accepted=%d", blAccepted);
 
     // 4. Reescreve o arquivo
     if (SD.exists(RC_FILE)) SD.remove(RC_FILE);

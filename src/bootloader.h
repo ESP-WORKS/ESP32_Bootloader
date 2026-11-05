@@ -46,6 +46,7 @@
 #define KEY_2       0x1E
 #define KEY_E_KEY   0x24
 #define KEY_P_KEY   0x4D
+#define KEY_I_KEY   0x43
 
 // Extended keys (prefixed 0xE0 on the wire) are returned by ps2_get_key() with bit 0x80 set.
 // Arrow up/down also come extended on most keyboards, so accept both forms.
@@ -57,7 +58,8 @@
 #define KEY_PGUP    (0x7D | 0x80)   // page up
 
 #define SPEAKER_PIN 25
-#define VERSION "ver 0.8.2b"
+#define BL_VERSION "0.8.4"           // numeric X.Y.Z
+#define VERSION "ver " BL_VERSION    // display string
 
 // Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.
 // Set -DOTA_SUSPEND_VGA_DURING_FLASH=1 if flash stage still sparkles.
@@ -112,6 +114,10 @@ extern int ps2ClkPin;
 extern int kbdConfigIdx;
 extern int magicBtnPin;
 
+// bootl.rc-backed values — defined in main.cpp
+extern String blInstalledVersion;   // version= key
+extern int    blAccepted;           // accepted= key (1 = disclaimer accepted)
+
 struct MenuEntry {
     char name[64];
     char version[64];
@@ -146,3 +152,4 @@ void scanFolders();
 #include "render.h"
 #include "updater.h"
 #include "extract.h"
+#include "disclaimer.h"

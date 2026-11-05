@@ -4,8 +4,9 @@
 // ===========================================================================
 #include "bootloader.h"
 
-void runUpdater();          // defined in updater.h (included after this)
-void runExtractFirmware();  // defined in extract.h (included after this)
+void runUpdater();              // defined in updater.h (included after this)
+void runExtractFirmware();     // defined in extract.h (included after this)
+void showDisclaimer();          // defined in disclaimer.h (included after this)
 
 
 
@@ -124,9 +125,8 @@ static const int MENU_BAR_X = 8;        // list starts near left edge
 // Emulator preview image (image.bmp inside the emulator folder)
 static const int EMU_IMG_W = 160;
 static const int EMU_IMG_H = 160;
-static const int EMU_IMG_X = HRES - EMU_IMG_W - 12;      // right side: 320-180 = 140
+static const int EMU_IMG_X = HRES - EMU_IMG_W - 12;      // right side
 static const int EMU_IMG_Y = MENU_Y_START - 10;
-//static const int EMU_IMG_Y = 45;
 static const int MENU_COUNTER_CLEAR_W = 5 * 6;  // room for "99/99"
 
 void drawMenuCounter(int selected) {
@@ -160,7 +160,7 @@ void clearEmulatorImage() {
     fillRect(EMU_IMG_X, EMU_IMG_Y, EMU_IMG_W, EMU_IMG_H, C_BLACK);
 }
 
-// Footer info line: first line of /bootloader/<folderName>.txt, drawn below the menu area.
+// Footer info line: first line of /assets/<folderName>.txt, drawn below the menu area.
 static const int EMU_INFO_Y = VRES - 13;   // one line from the bottom
 
 void drawEmulatorInfo(const char* folderPath) {
@@ -305,11 +305,12 @@ void drawMaintenanceScreen() {
     drawString(10, MENU_Y_START +  56, "R - Reset ESP32",                 C_WHITE,  C_BLACK);
     drawString(10, MENU_Y_START +  70, "D - Download Emulators / Update", C_WHITE,  C_BLACK);
     drawString(10, MENU_Y_START +  84, "E - Extract Firmware (Eremus)",   C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  98, "ESC/SPACE - Cancel",              C_CYAN,   C_BLACK);
+    drawString(10, MENU_Y_START +  98, "I - Show Disclaimer",             C_WHITE,  C_BLACK);
+    drawString(10, MENU_Y_START + 112, "ESC/SPACE - Cancel",              C_CYAN,   C_BLACK);
     
-    drawString(10, MENU_Y_START + 124, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
-    drawString(10, MENU_Y_START + 136, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
-    drawString(10, MENU_Y_START + 148, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra",         C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 128, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 137, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, MENU_Y_START + 146, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra",         C_WHITE, C_BLACK, &fabgl::FONT_5x7);
 
 }
 
@@ -320,6 +321,14 @@ void showMaintenanceMenu() {
     while (true) {
         uint8_t key = ps2_get_key();
         if (key == 0) continue;
+
+        // I - Show Disclaimer (re-display; Y/N just closes, no reset).
+        if (key == KEY_I_KEY) {
+            showDisclaimer();
+            ps2_flush();
+            drawMaintenanceScreen();
+            continue;
+        }
 
         const char* msg  = nullptr;
         const char* done = nullptr;

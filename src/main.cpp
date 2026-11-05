@@ -27,6 +27,8 @@ int ps2DatPin    = 32;
 int ps2ClkPin    = 33;
 int kbdConfigIdx = 0;
 int magicBtnPin  = 36;  // default; sobrescrito pelo loadRC() via magicb= no bootl.rc
+String blInstalledVersion = "";  // lido do bootl.rc (version=); default BL_VERSION se ausente
+int blAccepted = 0;              // lido do bootl.rc (accepted=); 1 = disclaimer aceito
 
 SPIClass spiSD(HSPI);
 Preferences prefs;
@@ -491,13 +493,25 @@ void scanFolders() {
         File entry = root.openNextFile();
         if (!entry) break;
         if (!entry.isDirectory()) { entry.close(); continue; }
+
+        // entry.name() may be "BOOTLOADER" or "/BOOTLOADER" — take basename and skip it.
+        const char* ename = entry.name();
+        const char* bn = strrchr(ename, '/');
+        bn = bn ? bn + 1 : ename;
+        Serial.printf("scanFolders[v4]: entry='%s' basename='%s'\n", ename, bn);
+        if (strncasecmp(bn, "BOOTLOADER", 10) == 0) {
+            Serial.println("  >>> SKIP BOOTLOADER <<<");
+            entry.close();
+            continue;
+        }
+
         char folderPath[128];
-        snprintf(folderPath, sizeof(folderPath), "/%s", entry.name());
+        snprintf(folderPath, sizeof(folderPath), "/%s", bn);
         char binPath[140], verPath[140];
         snprintf(binPath, sizeof(binPath), "%s/firmware.bin", folderPath);
         snprintf(verPath, sizeof(verPath), "%s/version.txt", folderPath);
         if (SD.exists(binPath) && SD.exists(verPath)) {
-            strncpy(menuEntries[menuCount].name, entry.name(), sizeof(menuEntries[0].name)-1);
+            strncpy(menuEntries[menuCount].name, bn, sizeof(menuEntries[0].name)-1);
             strncpy(menuEntries[menuCount].path, folderPath, sizeof(menuEntries[0].path)-1);
             File vf = SD.open(verPath);
             if (vf) {
@@ -566,6 +580,9 @@ void setup() {
 
     // Configura magic button (lido do bootl.rc; GPIO36 INPUT-ONLY, pull-up externo obrigatório)
     pinMode(magicBtnPin, INPUT);
+
+    // First-run legal disclaimer — shows until the user accepts (accepted=1 in bootl.rc).
+    showDisclaimerIfNeeded();
 
     // --- Modo 1: firmware.bin + version.txt na raiz ---
     if (SD.exists(FIRMWARE_FILE) && SD.exists(VERSION_FILE)) {
