@@ -1,1 +1,1 @@
-Microdigital TK-2000 by Andre Chaves and REYCO2000
+Microdigital TK-2000 emulator (Micro-Professor MPF-II by Multitech) by Andre Chaves and REYCO2000

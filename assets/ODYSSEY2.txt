@@ -1,1 +1,1 @@
-ODYSSEY2 emulator by Fg1998
+ODYSSEY2 emulator by Fg1998 based on LIBRETRO O2 emulator

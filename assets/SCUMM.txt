@@ -1,0 +1,1 @@
+SCUMMVM is an open-source adventure engine for Lucas Arts games created by the ScummVM team and ported by FG1998.

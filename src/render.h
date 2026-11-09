@@ -161,10 +161,27 @@ void clearEmulatorImage() {
 }
 
 // Footer info line: first line of /assets/<folderName>.txt, drawn below the menu area.
+// If the text is wider than the screen it scrolls sideways (marquee).
 static const int EMU_INFO_Y = VRES - 13;   // one line from the bottom
+static const int EMU_INFO_X = 6;           // left margin
+static const int EMU_INFO_CHAR_W = 6;      // FONT_6x12 glyph width
 
+static char     emuInfoText[160] = "";     // current footer text
+static int      emuInfoPixW = 0;           // text width in pixels
+static int      emuInfoScroll = 0;         // current horizontal offset (px)
+static bool     emuInfoNeedsScroll = false;
+static uint32_t emuInfoLastTick = 0;
+static uint32_t emuInfoStartMs = 0;        // when this text was loaded (for initial delay)
+
+static const uint32_t EMU_INFO_START_DELAY_MS = 3000;  // wait before scrolling starts
+
+// Load the footer text for an emulator and reset the marquee state.
 void drawEmulatorInfo(const char* folderPath) {
     fillRect(0, EMU_INFO_Y, HRES, 12, C_BLACK);   // clear the footer line
+    emuInfoText[0] = '\0';
+    emuInfoPixW = 0;
+    emuInfoScroll = 0;
+    emuInfoNeedsScroll = false;
 
     const char* name = folderPath;
     while (*name == '/') name++;
@@ -180,7 +197,44 @@ void drawEmulatorInfo(const char* folderPath) {
     line.trim();
     if (line.length() == 0) return;
 
-    drawString(6, EMU_INFO_Y, line.c_str(), C_CYAN, C_BLACK);
+    strncpy(emuInfoText, line.c_str(), sizeof(emuInfoText) - 1);
+    emuInfoText[sizeof(emuInfoText) - 1] = '\0';
+    emuInfoPixW = (int)strlen(emuInfoText) * EMU_INFO_CHAR_W;
+
+    int avail = HRES - EMU_INFO_X;          // space from left margin to right edge
+    emuInfoNeedsScroll = (emuInfoPixW > avail);
+    emuInfoLastTick = millis();
+    emuInfoStartMs  = millis();             // start the 3s pause before scrolling
+
+    // Draw the initial (left-aligned) frame.
+    drawString(EMU_INFO_X, EMU_INFO_Y, emuInfoText, C_CYAN, C_BLACK);
+}
+
+// Advance the footer marquee one step if the text is wider than the screen.
+// Call every loop; it self-throttles with EMU_INFO_STEP_MS so it moves at a
+// readable speed. The text scrolls left, then wraps around with a gap.
+void tickEmulatorInfo() {
+    if (!emuInfoNeedsScroll || emuInfoText[0] == '\0') return;
+
+    // Hold the text still for a few seconds after it appears, so it can be read
+    // from the start before the marquee begins.
+    if (millis() - emuInfoStartMs < EMU_INFO_START_DELAY_MS) return;
+
+    const uint32_t EMU_INFO_STEP_MS = 120;   // lower = faster scroll
+    if (millis() - emuInfoLastTick < EMU_INFO_STEP_MS) return;
+    emuInfoLastTick = millis();
+
+    const int GAP = 24;                      // px gap before the text repeats
+    int span = emuInfoPixW + GAP;            // one full cycle width
+    emuInfoScroll += EMU_INFO_CHAR_W;        // step by one glyph (stays pixel-aligned)
+    if (emuInfoScroll >= span) emuInfoScroll = 0;
+
+    // Clear the footer line, then draw the text twice (current + wrapped copy) so
+    // the tail of one and the head of the next are both visible during the wrap.
+    fillRect(0, EMU_INFO_Y, HRES, 12, C_BLACK);
+    int x1 = EMU_INFO_X - emuInfoScroll;
+    drawString(x1, EMU_INFO_Y, emuInfoText, C_CYAN, C_BLACK);
+    drawString(x1 + span, EMU_INFO_Y, emuInfoText, C_CYAN, C_BLACK);
 }
 
 // Draws /bootloader/<folderName>.bmp (8-bit or 24-bit uncompressed BMP, up to 180x180).
@@ -455,6 +509,9 @@ int runMenu() {
             if (drawEmulatorImage(menuEntries[imgPendingFor].path))
                 imgShownFor = imgPendingFor;   // only mark done if it finished (not aborted)
         }
+
+        // Scroll the footer text sideways if it's wider than the screen.
+        tickEmulatorInfo();
 
         // --- Polling magic button GPIO36 (cicla config de teclado) ---
         bool btnNow = digitalRead(magicBtnPin);

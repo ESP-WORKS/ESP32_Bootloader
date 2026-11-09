@@ -1,1 +1,1 @@
-COLECOVISION emulator by FG1998
+COLECOVISION emulator by FG1998 based on LIBRETRO colecovision emulator

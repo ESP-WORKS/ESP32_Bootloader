@@ -1,1 +1,1 @@
-ATARI 2600 VCS Emulator by FG1998
+ATARI 2600 VCS Emulator based on STELLA by FG1998
