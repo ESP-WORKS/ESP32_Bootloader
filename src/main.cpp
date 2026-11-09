@@ -530,6 +530,41 @@ void scanFolders() {
     root.close();
 }
 
+// True if ota_0 holds a valid ESP32 app image (first byte of the image is 0xE9).
+static bool ota0HasValidApp() {
+    const esp_partition_t* ota0 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+    if (!ota0) return false;
+    uint8_t magic = 0;
+    if (esp_partition_read(ota0, 0, &magic, 1) != ESP_OK) return false;
+    return (magic == 0xE9);
+}
+
+// Shows a short "press any key for menu" window. Returns true if a key was pressed
+// (open the menu), false on timeout (boot the installed emulator). Needs PS/2 ready.
+static bool autobootWindow(uint32_t windowMs) {
+    fillRect(0, 0, HRES, VRES, C_BLACK);
+    drawLogo((HRES - LOGO_W) / 2, 40);
+
+    drawString(82, 60, "Press any key for the menu", C_YELLOW, C_BLACK);
+
+    ps2_flush();
+    uint32_t start = millis();
+    int lastSec = -1;
+    while (millis() - start < windowMs) {
+        if (ps2_available()) { ps2_get_key(); return true; }   // any key -> menu
+        int sec = (int)((windowMs - (millis() - start)) / 1000) + 1;
+        if (sec != lastSec) {
+            lastSec = sec;
+            char cd[24];
+            snprintf(cd, sizeof(cd), "Booting in %ds ", sec);
+            drawString(122, 150, cd, C_CYAN, C_BLACK);
+        }
+        delay(10);
+    }
+    return false;
+}
+
 void setup() {
 
     disableCore0WDT();
@@ -590,6 +625,20 @@ void setup() {
     delay(200);
     ps2_flush();
     wifiSetupIfNeeded();
+
+    // --- Autoboot: if something is already flashed in ota_0, boot it directly
+    //     unless the user presses a key during the short window. ---
+    if (ota0HasValidApp()) {
+        if (!autobootWindow(3000)) {
+            Serial.println("Autoboot: launching installed emulator");
+            SD.end();
+            bootEmulatorDirect();   // boots ota_0, does not return
+            return;
+        }
+        // key pressed -> fall through to the menu
+        fillRect(0, 0, HRES, VRES, C_BLACK);
+        drawHeader();
+    }
 
     // --- Modo 1: firmware.bin + version.txt na raiz ---
     if (SD.exists(FIRMWARE_FILE) && SD.exists(VERSION_FILE)) {
@@ -676,19 +725,17 @@ void setup() {
     const char* versionName = menuEntries[selected].version;
     const char* folderPath  = menuEntries[selected].path;
 
-    if (!needsUpdate(folderPath, versionName)) {
-        statusLine("Status", "Firmware OK - Starting...", C_GREEN);
-        saveRC();
-        delay(1000); SD.end(); bootEmulatorDirect(); return;
-    }
-
-    statusLine("Status", "New firmware found!", C_YELLOW);
+    // Always flash the selected emulator into ota_0, then reboot straight into it.
     bool ok = doOTA(binPath, folderPath, versionName);
     if (ok) saveRC();
     SD.end();
 
-    if (ok) { statusLine("Status", "Restarting in 3s...", C_GREEN); delay(3000); bootEmulator(); }
-    else { statusLine("Status", "ERROR! Press RESET", C_RED); while(true) delay(1000); }
+    if (ok) {
+        bootEmulator();   // flashes done -> boot ota_0 (does not return)
+    } else {
+        statusLine("Status", "ERROR! Press RESET", C_RED);
+        while (true) delay(1000);
+    }
 
 
 
