@@ -505,12 +505,7 @@ void runUpdater() {
         bool needsUpdate = !isNew &&
                            isNewerVersion(localVersion.c_str(), version);
 
-        if (!isNew && !needsUpdate) {
-            char msg[70];
-            snprintf(msg, sizeof(msg), "%s v%s up to date", name, version);
-            statusLine(msg, C_GREEN);
-            continue;
-        }
+        bool upToDate = (!isNew && !needsUpdate);
 
         if (statusY > VRES - 40) {
             fillRect(0, MENU_Y_START + 12, HRES,
@@ -522,13 +517,17 @@ void runUpdater() {
         if (isNew) {
             snprintf(question, sizeof(question),
                      "Install %s v%s? Y/N", name, version);
+        } else if (upToDate) {
+            // Already installed and current — offer a reinstall instead of skipping.
+            snprintf(question, sizeof(question),
+                     "%s v%s up to date. Reinstall? Y/N", name, version);
         } else {
             snprintf(question, sizeof(question),
                      "Update %s %s->%s? Y/N",
                      name, localVersion.c_str(), version);
         }
 
-        statusLine(question, C_YELLOW);
+        statusLine(question, upToDate ? C_GREEN : C_YELLOW);
 
         // Limpa o buffer do teclado antes de aguardar a resposta.
         ps2_flush();
