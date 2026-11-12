@@ -8,6 +8,14 @@
 #include <ArduinoJson.h>
 #include "bootloader.h"   // config, globals, render (drawProgress/statusLine/...)
 
+// ArduinoJson allocator that uses PSRAM, so the (large) emulator list can be
+// parsed without exhausting internal DRAM. Falls back to normal malloc.
+struct PsramJsonAllocator {
+    void* allocate(size_t n)             { void* p = ps_malloc(n);    return p ? p : malloc(n); }
+    void  deallocate(void* p)            { free(p); }
+    void* reallocate(void* p, size_t n)  { void* q = ps_realloc(p, n); return q ? q : realloc(p, n); }
+};
+
 #define EMUL_JSON_URL "http://alternativebits.com/esp32/emulators.php"
 #define WIFICONFIG_FILE "/wificonfig.rc"
 #define WIFI_BURST_TX_POWER 60
@@ -456,7 +464,9 @@ void runUpdater() {
 
     statusLine("List", "OK", C_GREEN);
 
-    DynamicJsonDocument doc(32768);
+    // Big document in PSRAM — the full emulator list (assets/MC-1000 have dozens
+    // of files each) needs far more than the old 32KB.
+    BasicJsonDocument<PsramJsonAllocator> doc(320 * 1024);
     if (deserializeJson(doc, jsonStr) != DeserializationError::Ok) {
         updaterRadioRestore();
         statusLine("JSON", "Parse error!", C_RED);

@@ -10,7 +10,7 @@
 static const char* DISC_EN[] = {
     "DISCLAIMER",
     "",
-    "The ESP32 Bootloader, the emulators and the other works",
+    "The ESP32 Multiloader, the emulators and the other works",
     "made available here are offered free of charge, as open",
     "source, without any warranty or obligation of support,",
     "assistance or maintenance. The projects developed by",
@@ -28,7 +28,7 @@ static const char* DISC_EN[] = {
 static const char* DISC_PT[] = {
     "TERMO DE ISENCAO",
     "",
-    "O ESP32 Bootloader, os emuladores e os demais trabalhos",
+    "O ESP32 Multiloader, os emuladores e os demais trabalhos",
     "aqui disponibilizados sao oferecidos gratuitamente, em",
     "regime open source, sem qualquer garantia ou obrigacao de",
     "suporte, assistencia ou manutencao. Os projetos",
@@ -47,7 +47,7 @@ static const char* DISC_PT[] = {
 static const char* DISC_ES[] = {
     "AVISO LEGAL",
     "",
-    "El ESP32 Bootloader, los emuladores y los demas trabajos",
+    "El ESP32 Multiloader, los emuladores y los demas trabajos",
     "aqui disponibles se ofrecen gratuitamente, en regimen open",
     "source, sin garantia ni obligacion de soporte, asistencia",
     "o mantenimiento. Los proyectos desarrollados por ESP-WORKS",
@@ -85,11 +85,12 @@ static const int DISC_LANG_COUNT = 3;
 
 static void drawDisclaimer(int lang) {
     fillRect(0, 0, HRES, VRES, C_BLACK);
+    drawKbdBadge();   // keyboard config badge in the top-left corner
 
     const DiscLang& L = DISC_LANGS[lang];
 
     // Title in yellow, body in white, 9px line height with FONT_5x7.
-    int y = 4;
+    int y = 13;   // one line lower than before (was 4)
     drawString(6, y, L.lines[0], C_YELLOW, C_BLACK, &fabgl::FONT_5x7);
     y += 12;
     for (int i = 1; i < L.count; i++) {
@@ -121,7 +122,37 @@ static void runDisclaimer(bool allowDecline) {
     int lang = DISC_LANG_EN;   // start in English
     drawDisclaimer(lang);
 
+    // Magic button debounce (cycles C1/C2/C3 so the user can get a working keyboard
+    // before pressing Y, even if it booted on the wrong pins).
+    uint32_t lastBtnMs = 0;
+    bool lastBtnState = HIGH;
+    Serial.printf("[DISC] magic button pin=GPIO%d initial=%d\n",
+                  magicBtnPin, digitalRead(magicBtnPin));
+    uint32_t dbgLast = 0;
+
     while (true) {
+        // --- Magic button: cycle keyboard config on the fly ---
+        bool btnNow = digitalRead(magicBtnPin);
+        if (millis() - dbgLast > 1000) {   // log button level once per second
+            dbgLast = millis();
+            Serial.printf("[DISC] btn=%d\n", btnNow);
+        }
+        if (btnNow == LOW && lastBtnState == HIGH && (millis() - lastBtnMs) > 300) {
+            lastBtnMs = millis();
+            ps2_shutdown();
+            kbdConfigIdx = (kbdConfigIdx + 1) % KBD_CONFIG_COUNT;
+            ps2DatPin = KBD_CONFIGS[kbdConfigIdx].dat;
+            ps2ClkPin = KBD_CONFIGS[kbdConfigIdx].clk;
+            ps2_init();
+            delay(200);
+            ps2_flush();
+            Serial.printf("[DISC] magic button -> %s\n", KBD_CONFIGS[kbdConfigIdx].label);
+            drawKbdBadge();   // update the badge
+        }
+        lastBtnState = btnNow;
+
+        // --- Keyboard (non-blocking) ---
+        if (!ps2_available()) { delay(1); continue; }
         uint8_t key = ps2_get_key();
         if (key == 0) continue;
 

@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 Multiloader",
+  "version": "1.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "bin/bootloader.bin", "offset": 4096 },
+        { "path": "bin/partitions.bin", "offset": 32768 },
+        { "path": "bin/boot_app0.bin", "offset": 57344 },
+        { "path": "bin/firmware.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}

@@ -482,14 +482,6 @@ int runMenu() {
 
     drawMenu(selected, scrollOffset, currentPath);
 
-    bool hasInstalled = (currentPath.length() > 0);
-    uint32_t autobootStart = millis();
-    int lastSecsLeft = -1;
-    // FONT_6x12: worst case "10s" = 3 chars; clear a 4-char slot to avoid ghosts
-    const int countdownClearW = 4 * 6;
-    const int countdownY = MENU_Y_START - 20;
-    const int countdownClearX = HRES - countdownClearW - 4;
-
     // Magic button: debounce
     static uint32_t lastBtnMs = 0;
     bool lastBtnState = HIGH;
@@ -528,29 +520,8 @@ int runMenu() {
             Serial.printf("Magic button: trocou para %s\n", KBD_CONFIGS[kbdConfigIdx].label);
             // Atualiza badge sem redesenhar tudo
             drawKbdBadge();
-            // Cancela autoboot ao trocar config
-            if (hasInstalled) {
-                hasInstalled = false;
-                fillRect(countdownClearX, countdownY, countdownClearW, MENU_LINE_H, C_BLACK);
-            }
         }
         lastBtnState = btnNow;
-
-        if (hasInstalled) {
-            uint32_t elapsed = millis() - autobootStart;
-            if (elapsed >= AUTOBOOT_MS) return selected;
-            int secsLeft = (AUTOBOOT_MS - elapsed) / 1000 + 1;
-            // Only redraw when the second changes — avoids flooding FabGL queue
-            if (secsLeft != lastSecsLeft) {
-                lastSecsLeft = secsLeft;
-                char countdown[16];
-                snprintf(countdown, sizeof(countdown), "%ds", secsLeft);
-                int textW = (int)strlen(countdown) * 6;
-                int textX = HRES - textW - 4;
-                fillRect(countdownClearX, countdownY, countdownClearW, MENU_LINE_H, C_BLACK);
-                drawString(textX, countdownY, countdown, C_YELLOW, C_BLACK);
-            }
-        }
 
         if (!ps2_available()) {
             delay(1);
@@ -560,11 +531,6 @@ int runMenu() {
         uint8_t key = ps2_get_key();
         if (key == 0) continue;
         // Do not wipe the ring here — that raced the ISR and dropped make codes
-
-        if (hasInstalled) {
-            hasInstalled = false;
-            fillRect(countdownClearX, countdownY, countdownClearW, MENU_LINE_H, C_BLACK);
-        }
 
         speakerClick();
         Serial.printf("Key: 0x%02X\n", key);

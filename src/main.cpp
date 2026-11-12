@@ -27,6 +27,7 @@ int ps2DatPin    = 32;
 int ps2ClkPin    = 33;
 int kbdConfigIdx = 0;
 int magicBtnPin  = 36;  // default; sobrescrito pelo loadRC() via magicb= no bootl.rc
+int autoStartTime = 3;  // segundos da janela de autoboot; lido de autostarttime= no bootl.rc
 String blInstalledVersion = "";  // lido do bootl.rc (version=); default BL_VERSION se ausente
 int blAccepted = 0;              // lido do bootl.rc (accepted=); 1 = disclaimer aceito
 
@@ -320,141 +321,56 @@ bool doOTA(const char* binPath, const char* folderPath, const char* versionName)
         return false;
     }
 
-    // Phase A: prefer full SD → PSRAM (separates SD burst from flash writes)
-    uint8_t* fileBuf = nullptr;
-    bool fromPsram = false;
-    if (psramFound()) {
-        fileBuf = (uint8_t*)ps_malloc(fileSize);
-        if (fileBuf) {
-            statusLine("OTA", "Loading SD -> PSRAM...", C_YELLOW);
-            size_t loaded = 0;
-            int lastPct = -1;
-            const size_t RD = 64 * 1024;
-            otaProgressMaybe(lastPct, 0, fileSize, "Reading SD");
-            while (loaded < fileSize) {
-                size_t want = min(RD, fileSize - loaded);
-                size_t rd = bin.read(fileBuf + loaded, want);
-                if (rd == 0) break;
-                loaded += rd;
-                otaProgressMaybe(lastPct, loaded, fileSize, "Reading SD");
-            }
-            bin.close();
-            if (loaded != fileSize) {
-                free(fileBuf);
-                statusLine("OTA", "SD READ ERROR", C_RED);
-                return false;
-            }
-            fromPsram = true;
-            statusY += 20;  // leave room below the progress bar
-            statusLine("OTA", "Flashing from PSRAM...", C_CYAN);
-        }
-    }
-    if (!fromPsram) {
-        statusLine("OTA", "Streaming from SD...", C_YELLOW);
-    }
-
-#if OTA_SUSPEND_VGA_DURING_FLASH
-    // Stop VGA DMA during flash writes — screen goes black; progress on Serial only
-    statusLine("OTA", "Blanking VGA for flash...", C_YELLOW);
-    delay(80);
-    DisplayController.end();
-    const bool vgaSuspended = true;
-#else
-    const bool vgaSuspended = false;
-#endif
-
-    auto otaFailUi = [&](const char* msg) {
-#if OTA_SUSPEND_VGA_DURING_FLASH
-        if (vgaSuspended) {
-            DisplayController.begin();
-            DisplayController.setResolution(QVGA_320x240_60Hz);
-            drawHeader();
-            statusY = MENU_Y_START;
-        }
-#endif
-        statusLine("OTA", msg, C_RED);
-    };
+    // Stream straight from SD into ota_0, one chunk at a time. No full PSRAM copy:
+    // we read a block from the card and write it to flash immediately. This skips
+    // the SD->PSRAM pre-load, so switching emulators is noticeably faster and uses
+    // almost no RAM. (The PSRAM pre-load existed to avoid VGA flicker, but there's
+    // no WiFi contention here and flash writes don't fight the SD bus badly.)
+    statusLine("OTA", "Flashing from SD...", C_YELLOW);
 
     esp_ota_handle_t ota_handle;
     esp_err_t err = esp_ota_begin(ota0, fileSize, &ota_handle);
     if (err != ESP_OK) {
         char msg[50];
         snprintf(msg, sizeof(msg), "ota_begin err:%d", err);
-        if (fileBuf) free(fileBuf);
-        else bin.close();
-        otaFailUi(msg);
+        bin.close();
+        statusLine("OTA", msg, C_RED);
         return false;
     }
 
     size_t written = 0;
     int lastPct = -1;
-    if (!vgaSuspended) otaProgressMaybe(lastPct, 0, fileSize, "Flashing");
+    otaProgressMaybe(lastPct, 0, fileSize, "Flashing");
 
-    if (fromPsram) {
-        const size_t CHUNK = 64 * 1024;
-        while (written < fileSize) {
-            size_t n = min(CHUNK, fileSize - written);
-            err = esp_ota_write(ota_handle, fileBuf + written, n);
-            if (err != ESP_OK) {
-                char msg[50];
-                snprintf(msg, sizeof(msg), "ota_write err:%d", err);
-                free(fileBuf);
-                esp_ota_abort(ota_handle);
-                otaFailUi(msg);
-                return false;
-            }
-            written += n;
-            if (vgaSuspended) {
-                int pct = (int)((written * 100) / fileSize);
-                if (pct / 10 != lastPct / 10 || written == fileSize) {
-                    lastPct = pct;
-                    Serial.printf("OTA flash %d%% (%u/%u)\n", pct, (unsigned)written, (unsigned)fileSize);
-                }
-            } else {
-                otaProgressMaybe(lastPct, written, fileSize, "Flashing");
-            }
-        }
-        free(fileBuf);
-        fileBuf = nullptr;
-    } else {
-        const size_t CHUNK = 16 * 1024;
-        uint8_t* buf = (uint8_t*)malloc(CHUNK);
-        const size_t chunkSize = buf ? CHUNK : 4096;
-        uint8_t stackBuf[4096];
-        uint8_t* ptr = buf ? buf : stackBuf;
+    const size_t CHUNK = 32 * 1024;
+    uint8_t* buf = (uint8_t*)malloc(CHUNK);
+    const size_t chunkSize = buf ? CHUNK : 4096;
+    uint8_t stackBuf[4096];
+    uint8_t* ptr = buf ? buf : stackBuf;
 
-        while (written < fileSize) {
-            size_t want = min(chunkSize, fileSize - written);
-            size_t rd = bin.read(ptr, want);
-            if (rd == 0) break;
-            err = esp_ota_write(ota_handle, ptr, rd);
-            if (err != ESP_OK) {
-                char msg[50];
-                snprintf(msg, sizeof(msg), "ota_write err:%d", err);
-                if (buf) free(buf);
-                bin.close();
-                esp_ota_abort(ota_handle);
-                otaFailUi(msg);
-                return false;
-            }
-            written += rd;
-            if (vgaSuspended) {
-                int pct = (int)((written * 100) / fileSize);
-                if (pct / 10 != lastPct / 10 || written == fileSize) {
-                    lastPct = pct;
-                    Serial.printf("OTA flash %d%% (%u/%u)\n", pct, (unsigned)written, (unsigned)fileSize);
-                }
-            } else {
-                otaProgressMaybe(lastPct, written, fileSize, "Flashing");
-            }
+    while (written < fileSize) {
+        size_t want = min(chunkSize, fileSize - written);
+        size_t rd = bin.read(ptr, want);
+        if (rd == 0) break;
+        err = esp_ota_write(ota_handle, ptr, rd);
+        if (err != ESP_OK) {
+            char msg[50];
+            snprintf(msg, sizeof(msg), "ota_write err:%d", err);
+            if (buf) free(buf);
+            bin.close();
+            esp_ota_abort(ota_handle);
+            statusLine("OTA", msg, C_RED);
+            return false;
         }
-        if (buf) free(buf);
-        bin.close();
+        written += rd;
+        otaProgressMaybe(lastPct, written, fileSize, "Flashing");
     }
+    if (buf) free(buf);
+    bin.close();
 
     if (written != fileSize) {
         esp_ota_abort(ota_handle);
-        otaFailUi("INCOMPLETE WRITE");
+        statusLine("OTA", "INCOMPLETE WRITE", C_RED);
         return false;
     }
 
@@ -462,19 +378,9 @@ bool doOTA(const char* binPath, const char* folderPath, const char* versionName)
     if (err != ESP_OK) {
         char msg[50];
         snprintf(msg, sizeof(msg), "ota_end err:%d", err);
-        otaFailUi(msg);
+        statusLine("OTA", msg, C_RED);
         return false;
     }
-
-#if OTA_SUSPEND_VGA_DURING_FLASH
-    if (vgaSuspended) {
-        DisplayController.begin();
-        DisplayController.setResolution(QVGA_320x240_60Hz);
-        drawHeader();
-        statusY = MENU_Y_START;
-        statusLine("OTA", "VGA restored", C_CYAN);
-    }
-#endif
 
     saveVersion(folderPath, versionName);
     statusY += 20;
@@ -607,6 +513,14 @@ void setup() {
 
     // Lê /bootl.rc e define ps2DatPin / ps2ClkPin / kbdConfigIdx
     loadRC();
+    drawKbdBadge();   // redraw the badge now that loadRC() set the real kbdConfigIdx
+
+    // Bring the keyboard up with the loaded C1/C2/C3 pins RIGHT NOW, so the user can
+    // already press Y on the disclaimer even when the keyboard isn't on the C1 pins.
+    ps2_init();
+    delay(200);
+    ps2_flush();
+
     {
         char kbdMsg[40];
         snprintf(kbdMsg, sizeof(kbdMsg), "DAT=GPIO%d CLK=GPIO%d", ps2DatPin, ps2ClkPin);
@@ -629,7 +543,7 @@ void setup() {
     // --- Autoboot: if something is already flashed in ota_0, boot it directly
     //     unless the user presses a key during the short window. ---
     if (ota0HasValidApp()) {
-        if (!autobootWindow(3000)) {
+        if (!autobootWindow((uint32_t)autoStartTime * 1000)) {
             Serial.println("Autoboot: launching installed emulator");
             SD.end();
             bootEmulatorDirect();   // boots ota_0, does not return

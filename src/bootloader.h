@@ -59,7 +59,7 @@
 #define KEY_PGUP    (0x7D | 0x80)   // page up
 
 #define SPEAKER_PIN 25
-#define BL_VERSION "0.8.5"           // numeric X.Y.Z
+#define BL_VERSION "0.8.72"           // numeric X.Y.Z
 #define VERSION "ver " BL_VERSION    // display string
 
 // Optional: blank VGA during flash writes. Default 0 = keep VGA + rare progress.

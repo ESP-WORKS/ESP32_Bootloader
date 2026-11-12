@@ -45,6 +45,10 @@ extern String blInstalledVersion;
 // Flag de aceite do disclaimer (chave accepted= do bootl.rc). 1 = já aceitou.
 extern int blAccepted;
 
+// Tempo (em segundos) da janela de autoboot. Chave autostarttime= do bootl.rc.
+// Default 3 se a chave não existir (e nesse caso é gravada).
+extern int autoStartTime;
+
 // ---------------------------------------------------------------------------
 // Parse simples de "chave=valor\n"
 // Retorna true se a chave foi encontrada; escreve o valor em outVal.
@@ -75,6 +79,7 @@ void loadRC() {
     int dat = -1, clk = -1;
     bool found = false;
     bool hadVersionKey = false;
+    bool hadAutoStart = false;
 
     File f = SD.open(RC_FILE, FILE_READ);
     if (f) {
@@ -95,6 +100,7 @@ void loadRC() {
             if (rcParseLine(line, "magicb",  val, sizeof(val))) magicBtnPin = atoi(val);
             if (rcParseLine(line, "version", val, sizeof(val))) { blInstalledVersion = String(val); hadVersionKey = true; }
             if (rcParseLine(line, "accepted", val, sizeof(val))) blAccepted = atoi(val);
+            if (rcParseLine(line, "autostarttime", val, sizeof(val))) { autoStartTime = atoi(val); hadAutoStart = true; }
         }
         f.close();
         found = true;
@@ -123,7 +129,7 @@ void loadRC() {
                   blInstalledVersion.c_str());
     Serial.printf("RC: found=%d hadVersionKey=%d\n", (int)found, (int)hadVersionKey);
 
-    // Se o arquivo não existia, cria com C1 + version compilada
+    // Se o arquivo não existia, cria com C1 + version + autostarttime
     if (!found) {
         Serial.println("RC: bootl.rc nao encontrado, criando com C1");
         File wf = SD.open(RC_FILE, FILE_WRITE);
@@ -132,11 +138,12 @@ void loadRC() {
             wf.printf("kbdclk=%d\n", KBD_CONFIGS[0].clk);
             wf.printf("magicb=%d\n", magicBtnPin);
             wf.printf("version=%s\n", blInstalledVersion.c_str());
+            wf.printf("autostarttime=%d\n", autoStartTime);
             wf.close();
         }
-    } else if (!hadVersionKey) {
-        // Arquivo existia mas sem a chave version: adiciona preservando o resto.
-        Serial.println("RC: adicionando version= ao bootl.rc existente");
+    } else if (!hadVersionKey || !hadAutoStart) {
+        // Arquivo existia mas sem version= e/ou autostarttime=: adiciona preservando o resto.
+        Serial.println("RC: adicionando chaves faltantes ao bootl.rc existente");
         saveRC();
     }
 }
@@ -149,7 +156,7 @@ void saveRC() {
     // 1. Lê todas as linhas existentes (para preservar chaves desconhecidas)
     char lines[RC_MAX_LINES][RC_LINE_LEN];
     int  lineCount = 0;
-    bool hadDat = false, hadClk = false, hadMagic = false, hadVersion = false, hadAccepted = false;
+    bool hadDat = false, hadClk = false, hadMagic = false, hadVersion = false, hadAccepted = false, hadAutoStart = false;
 
     File rf = SD.open(RC_FILE, FILE_READ);
     if (rf) {
@@ -186,6 +193,9 @@ void saveRC() {
         } else if (rcParseLine(lines[i], "accepted", val, sizeof(val))) {
             snprintf(lines[i], RC_LINE_LEN, "accepted=%d", blAccepted);
             hadAccepted = true;
+        } else if (rcParseLine(lines[i], "autostarttime", val, sizeof(val))) {
+            snprintf(lines[i], RC_LINE_LEN, "autostarttime=%d", autoStartTime);
+            hadAutoStart = true;
         }
     }
 
@@ -200,6 +210,8 @@ void saveRC() {
         snprintf(lines[lineCount++], RC_LINE_LEN, "version=%s", blInstalledVersion.c_str());
     if (!hadAccepted && lineCount < RC_MAX_LINES)
         snprintf(lines[lineCount++], RC_LINE_LEN, "accepted=%d", blAccepted);
+    if (!hadAutoStart && lineCount < RC_MAX_LINES)
+        snprintf(lines[lineCount++], RC_LINE_LEN, "autostarttime=%d", autoStartTime);
 
     // 4. Reescreve o arquivo
     if (SD.exists(RC_FILE)) SD.remove(RC_FILE);
