@@ -15,11 +15,22 @@ const uint32_t AUTOBOOT_MS = 10000;
 fabgl::VGAController DisplayController;
 fabgl::Canvas          cv(&DisplayController);
 
+// --- Porta 1 (teclado principal — pinos vem do bootl.rc) ---
 volatile uint8_t ps2_buffer[PS2_BUFFER_SIZE];
 volatile int ps2_head = 0, ps2_tail = 0;
 volatile int ps2_bit = 0;
 volatile uint8_t ps2_data = 0;
 portMUX_TYPE ps2Mux = portMUX_INITIALIZER_UNLOCKED;
+
+// --- Porta 2 (adaptador DB9 / gamepad bridge no conector do mouse PS/2 da VGA32) ---
+// Pinos fixos: no esquema da VGA32 o mouse PS/2 esta sempre em GPIO26 (CLK) / GPIO27 (DAT).
+volatile uint8_t ps2_buffer2[PS2_BUFFER_SIZE];
+volatile int ps2_head2 = 0, ps2_tail2 = 0;
+volatile int ps2_bit2 = 0;
+volatile uint8_t ps2_data2 = 0;
+portMUX_TYPE ps2Mux2 = portMUX_INITIALIZER_UNLOCKED;
+const int ps2DatPin2 = 27;
+const int ps2ClkPin2 = 26;
 
 // Pinos PS/2 e config de teclado — definidos em runtime por loadRC() após SD montar.
 // Valores iniciais C1 (padrão) para caso o SD falhe antes do loadRC().
@@ -39,13 +50,14 @@ MenuEntry menuEntries[MAX_ENTRIES];
 int menuCount = 0;
 
 // ===========================================================================
-// PS2 implementation
+// PS2 implementation — dual port
 // ===========================================================================
+// Resync explanation (vale pras duas ISRs):
+//   PS/2 bits chegam ~60-120us apart. Um gap > 250us significa clock perdido
+//   ou novo frame comecando — restart do bit counter. Sem isso, um clock
+//   perdido dessincroniza pra sempre e todo scancode sai corrompido.
+
 void IRAM_ATTR ps2_isr() {
-    // Resync by timing: PS/2 bits arrive ~60-120us apart. A gap longer than
-    // ~250us means a clock pulse was lost or a new frame is starting, so we
-    // restart the bit counter. Without this, one missed clock desyncs the
-    // frame forever and every scancode comes out garbled (e.g. 0xC0 / 0xEA).
     static uint32_t lastEdgeUs = 0;
     uint32_t nowUs = micros();
     if ((uint32_t)(nowUs - lastEdgeUs) > 250) {
@@ -62,7 +74,7 @@ void IRAM_ATTR ps2_isr() {
     } else if (ps2_bit == 11) {
         portENTER_CRITICAL_ISR(&ps2Mux);
         int next = (ps2_head + 1) % PS2_BUFFER_SIZE;
-        if (next != ps2_tail) {  // drop byte if ring is full
+        if (next != ps2_tail) {
             ps2_buffer[ps2_head] = ps2_data;
             ps2_head = next;
         }
@@ -70,28 +82,55 @@ void IRAM_ATTR ps2_isr() {
         ps2_bit = 0;
         ps2_data = 0;
     } else if (ps2_bit > 11) {
-        // Frame desync — resync on next falling edges
         ps2_bit = 0;
         ps2_data = 0;
     }
 }
 
-void ps2_flush() {
-    portENTER_CRITICAL(&ps2Mux);
-    ps2_head = ps2_tail = 0;
-    ps2_bit = 0;
-    ps2_data = 0;
-    portEXIT_CRITICAL(&ps2Mux);
+void IRAM_ATTR ps2_isr2() {
+    static uint32_t lastEdgeUs = 0;
+    uint32_t nowUs = micros();
+    if ((uint32_t)(nowUs - lastEdgeUs) > 250) {
+        ps2_bit2 = 0;
+        ps2_data2 = 0;
+    }
+    lastEdgeUs = nowUs;
+
+    int dat = digitalRead(ps2DatPin2);
+    ps2_bit2++;
+    if (ps2_bit2 >= 2 && ps2_bit2 <= 9) {
+        ps2_data2 >>= 1;
+        if (dat) ps2_data2 |= 0x80;
+    } else if (ps2_bit2 == 11) {
+        portENTER_CRITICAL_ISR(&ps2Mux2);
+        int next = (ps2_head2 + 1) % PS2_BUFFER_SIZE;
+        if (next != ps2_tail2) {
+            ps2_buffer2[ps2_head2] = ps2_data2;
+            ps2_head2 = next;
+        }
+        portEXIT_CRITICAL_ISR(&ps2Mux2);
+        ps2_bit2 = 0;
+        ps2_data2 = 0;
+    } else if (ps2_bit2 > 11) {
+        ps2_bit2 = 0;
+        ps2_data2 = 0;
+    }
 }
 
-bool ps2_available() {
+// ---- Helpers por porta ----
+static bool p1_available() {
     portENTER_CRITICAL(&ps2Mux);
     bool has = (ps2_head != ps2_tail);
     portEXIT_CRITICAL(&ps2Mux);
     return has;
 }
-
-static uint8_t ps2_pop() {
+static bool p2_available() {
+    portENTER_CRITICAL(&ps2Mux2);
+    bool has = (ps2_head2 != ps2_tail2);
+    portEXIT_CRITICAL(&ps2Mux2);
+    return has;
+}
+static uint8_t p1_pop() {
     uint8_t code = 0;
     portENTER_CRITICAL(&ps2Mux);
     if (ps2_head != ps2_tail) {
@@ -101,57 +140,113 @@ static uint8_t ps2_pop() {
     portEXIT_CRITICAL(&ps2Mux);
     return code;
 }
+static uint8_t p2_pop() {
+    uint8_t code = 0;
+    portENTER_CRITICAL(&ps2Mux2);
+    if (ps2_head2 != ps2_tail2) {
+        code = ps2_buffer2[ps2_tail2];
+        ps2_tail2 = (ps2_tail2 + 1) % PS2_BUFFER_SIZE;
+    }
+    portEXIT_CRITICAL(&ps2Mux2);
+    return code;
+}
+
+void ps2_flush() {
+    portENTER_CRITICAL(&ps2Mux);
+    ps2_head = ps2_tail = 0;
+    ps2_bit = 0;
+    ps2_data = 0;
+    portEXIT_CRITICAL(&ps2Mux);
+    portENTER_CRITICAL(&ps2Mux2);
+    ps2_head2 = ps2_tail2 = 0;
+    ps2_bit2 = 0;
+    ps2_data2 = 0;
+    portEXIT_CRITICAL(&ps2Mux2);
+}
+
+bool ps2_available() {
+    return p1_available() || p2_available();
+}
 
 void ps2_init() {
     pinMode(ps2DatPin, INPUT_PULLUP);
     pinMode(ps2ClkPin, INPUT_PULLUP);
+    pinMode(ps2DatPin2, INPUT_PULLUP);
+    pinMode(ps2ClkPin2, INPUT_PULLUP);
     ps2_flush();
-    attachInterrupt(digitalPinToInterrupt(ps2ClkPin), ps2_isr, FALLING);
+    attachInterrupt(digitalPinToInterrupt(ps2ClkPin),  ps2_isr,  FALLING);
+    attachInterrupt(digitalPinToInterrupt(ps2ClkPin2), ps2_isr2, FALLING);
 }
 
-// Waits up to timeoutMs for the next byte in a multi-byte sequence.
-// Returns true if a byte became available (does NOT pop it), false on timeout.
-static bool ps2_wait_next(uint32_t timeoutMs) {
+// Espera o proximo byte DA MESMA PORTA (crucial — nao pode cruzar com o
+// fluxo da outra porta, senao sequencias E0 / F0 ficam corrompidas).
+static bool wait_next_port(int port, uint32_t timeoutMs) {
     uint32_t start = millis();
-    while (!ps2_available()) {
-        if (millis() - start >= timeoutMs) return false;  // second byte never arrived
+    while (true) {
+        if (port == 1 ? p1_available() : p2_available()) return true;
+        if (millis() - start >= timeoutMs) return false;
         delay(1);
     }
-    return true;
 }
 
-// Returns make scancode; 0 = break / ignore. Does not wipe the ring after each key.
-// Multi-byte tails (0xF0 break, 0xE0 extended) use a bounded wait so a lost or
-// delayed second byte can never lock the menu forever.
-uint8_t ps2_get_key() {
-    const uint32_t TAIL_TIMEOUT_MS = 20;  // enough for a valid pair, short enough to never hang
-    while (true) {
-        while (!ps2_available()) delay(1);   // idle wait for a first byte (blocking is fine)
-        uint8_t code = ps2_pop();
-        if (code == 0) continue;
+// Processa 1 scancode completo a partir da porta indicada. Retorna:
+//   make scancode (bit 0x80 setado para teclas estendidas tipo setas)
+//   ou 0 em break / sequencia incompleta / byte espurio.
+static uint8_t read_key_from(int port) {
+    const uint32_t TAIL_TIMEOUT_MS = 20;
+    uint8_t code = (port == 1) ? p1_pop() : p2_pop();
+    if (code == 0) return 0;
+
+    if (code == 0xF0) {
+        if (!wait_next_port(port, TAIL_TIMEOUT_MS)) return 0;
+        (port == 1) ? p1_pop() : p2_pop();
+        return 0;
+    }
+    if (code == 0xE0) {
+        if (!wait_next_port(port, TAIL_TIMEOUT_MS)) return 0;
+        code = (port == 1) ? p1_pop() : p2_pop();
         if (code == 0xF0) {
-            if (!ps2_wait_next(TAIL_TIMEOUT_MS)) return 0;  // orphan break: drop, don't hang
-            ps2_pop();  // discard released key
+            if (!wait_next_port(port, TAIL_TIMEOUT_MS)) return 0;
+            (port == 1) ? p1_pop() : p2_pop();
             return 0;
         }
-        if (code == 0xE0) {
-            if (!ps2_wait_next(TAIL_TIMEOUT_MS)) return 0;  // orphan extended prefix: drop
-            code = ps2_pop();
-            if (code == 0xF0) {
-                if (!ps2_wait_next(TAIL_TIMEOUT_MS)) return 0;
-                ps2_pop();
-                return 0;
+        return code | 0x80;
+    }
+    return code;
+}
+
+// Drena qualquer uma das duas portas. Uma vez iniciada a leitura de uma
+// porta, read_key_from() conclui a sequencia nela antes de olhar a outra —
+// isso impede que E0/F0 de uma porta sejam "preenchidos" pela outra.
+uint8_t ps2_get_key() {
+    while (true) {
+        while (!p1_available() && !p2_available()) delay(1);
+        // --- DEBUG: imprime bytes brutos da porta 2 antes de processar ---
+        if (!p1_available() && p2_available()) {
+            portENTER_CRITICAL(&ps2Mux2);
+            int h = ps2_head2, t = ps2_tail2;
+            portEXIT_CRITICAL(&ps2Mux2);
+            Serial.print("[p2 raw]");
+            while (t != h) {
+                Serial.printf(" %02X", ps2_buffer2[t]);
+                t = (t + 1) % PS2_BUFFER_SIZE;
             }
-            return code | 0x80;  // mark extended keys (arrows, PgUp/PgDn) so they're distinct
+            Serial.println();
         }
-        return code;
+        // ----------------------------------------------------------------
+        uint8_t k = p1_available() ? read_key_from(1) : read_key_from(2);
+        if (k != 0) return k;
+        // k == 0 => era break ou lixo; volta pro loop
     }
 }
 
 void ps2_shutdown() {
     detachInterrupt(digitalPinToInterrupt(ps2ClkPin));
+    detachInterrupt(digitalPinToInterrupt(ps2ClkPin2));
     gpio_reset_pin((gpio_num_t)ps2DatPin);
     gpio_reset_pin((gpio_num_t)ps2ClkPin);
+    gpio_reset_pin((gpio_num_t)ps2DatPin2);
+    gpio_reset_pin((gpio_num_t)ps2ClkPin2);
     WRITE_PERI_REG(0x3ff48094, 0);
 }
 
