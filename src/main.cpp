@@ -3,6 +3,8 @@
 // All modules pulled in through a single include below.
 // ===========================================================================
 #include "bootloader.h"
+#include "keymap.h"
+#include "ps2_tx.h"
 
 // --------------------------------------------------------------------------
 // Global state definitions (declared extern in bootloader.h)
@@ -334,6 +336,59 @@ void saveVersion(const char* path, const char* version) {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
+// Reads /<folderPath>/keymap.ini and sends it to the T-Display on port 2 before
+// booting the emulator. Must run while the SD is still mounted. If the file is
+// missing or the send fails, the T-Display keeps its built-in default map.
+//
+// The port-2 ISR is detached and the VGA is stopped first, so the bit-banged
+// PS/2 timing isn't disturbed by the display DMA. The screen going black here is
+// fine — we're about to boot the emulator anyway.
+void sendKeymapForBoot(const char* folderPath) {
+    Serial.printf("[KEYMAP] sendKeymapForBoot('%s')\n", folderPath);
+
+    Keymap km;
+    if (!loadKeymap(folderPath, km)) {
+        // No keymap.ini: still send the emulator name so the T-Display can show it.
+        // No button triples go out (count stays 0), so the T-Display keeps its own
+        // default mapping -- only the name is transmitted.
+        km.clear();
+        const char* base = folderPath;
+        while (*base == '/') base++;                 // strip leading slash(es)
+        const char* slash = strrchr(base, '/');      // in case of a nested path
+        if (slash) base = slash + 1;
+        strncpy(km.name, base, sizeof(km.name) - 1);
+        km.name[sizeof(km.name) - 1] = '\0';
+        km.valid = true;
+        Serial.printf("[KEYMAP] no ini -> sending name only ('%s')\n", km.name);
+    }
+
+    // Log what was parsed, before touching any hardware.
+    Serial.println("[KEYMAP] parsed buttons:");
+    for (int i = 0; i < GP_BUTTON_COUNT; i++) {
+        if (km.keys[i][0]) Serial.printf("   %s = %s\n", GP_BUTTONS[i].iniName, km.keys[i]);
+    }
+    Serial.flush();
+
+    // Stop the port-2 receive ISR so it doesn't fight the TX bit-banging.
+    Serial.println("[KEYMAP] detaching port-2 ISR");
+    Serial.flush();
+    detachInterrupt(digitalPinToInterrupt(ps2ClkPin2));
+
+    // Stop the VGA to remove display-DMA jitter during the send.
+    Serial.println("[KEYMAP] stopping VGA");
+    Serial.flush();
+    DisplayController.end();
+    delay(20);
+
+    Serial.println("[KEYMAP] sending packet...");
+    Serial.flush();
+    bool sent = ps2_send_keymap(km);   // best-effort; has its own timeouts
+    Serial.printf("[KEYMAP] send result: %s\n", sent ? "OK" : "FAILED");
+    Serial.flush();
+
+    // No need to restore the ISR/VGA — the caller boots the emulator next.
+}
+
 // Stop VGA DMA/I2S and release shared peripherals before ESP.restart()
 void shutdownForReboot() {
     Serial.println("Shutdown: PS2 / VGA / SD...");
@@ -640,6 +695,13 @@ void setup() {
     if (ota0HasValidApp()) {
         if (!autobootWindow((uint32_t)autoStartTime * 1000)) {
             Serial.println("Autoboot: launching installed emulator");
+            // Recover the last-installed emulator path from NVS to send its keymap.
+            prefs.begin("sdloader", true);
+            String bootPath = prefs.getString("path", "");
+            prefs.end();
+            Serial.printf("Autoboot: last emulator path = '%s'\n", bootPath.c_str());
+            if (bootPath.length() > 0 && bootPath != "/")
+                sendKeymapForBoot(bootPath.c_str());   // SD still mounted here
             SD.end();
             bootEmulatorDirect();   // boots ota_0, does not return
             return;
@@ -662,7 +724,7 @@ void setup() {
         if (!needsUpdate("/", versionName)) {
             statusLine("Status", "Firmware OK - Starting...", C_GREEN);
             saveRC();
-            delay(1000); SD.end(); bootEmulatorDirect(); return;
+            delay(1000); sendKeymapForBoot("/"); SD.end(); bootEmulatorDirect(); return;
         }
         statusLine("Status", "New firmware found!", C_YELLOW);
         bool ok = doOTA(FIRMWARE_FILE, "/", versionName);
@@ -737,11 +799,13 @@ void setup() {
     // Always flash the selected emulator into ota_0, then reboot straight into it.
     bool ok = doOTA(binPath, folderPath, versionName);
     if (ok) saveRC();
-    SD.end();
 
     if (ok) {
+        sendKeymapForBoot(folderPath);   // send gamepad keymap while SD is still up
+        SD.end();
         bootEmulator();   // flashes done -> boot ota_0 (does not return)
     } else {
+        SD.end();
         statusLine("Status", "ERROR! Press RESET", C_RED);
         while (true) delay(1000);
     }
