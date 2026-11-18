@@ -97,6 +97,35 @@ struct Keymap {
         for (int i = 0; i < GP_BUTTON_COUNT; i++) keys[i][0] = '\0';
         valid = false;
     }
+
+    // Preenche com o mapeamento default do T-Display.
+    // Usado na tela de autoboot quando nao existe keymap.ini.
+    //   A=ENTER  B=SPACE  X=M  Y=N
+    //   UP/DOWN/LEFT/RIGHT = setas
+    //   L1=0  R1=1  L2=F12  R2=F11
+    //   L3=F10  R3=F9  START=F5  SELECT=ESC  HOME=--
+    void loadDefaults() {
+        clear();
+        //                 idx  button   key
+        strcpy(keys[ 0], "ENTER");   //  0  A
+        strcpy(keys[ 1], "SPACE");   //  1  B
+        strcpy(keys[ 2], "M");       //  2  X
+        strcpy(keys[ 3], "N");       //  3  Y
+        strcpy(keys[ 4], "UP");      //  4  UP
+        strcpy(keys[ 5], "DOWN");    //  5  DOWN
+        strcpy(keys[ 6], "LEFT");    //  6  LEFT
+        strcpy(keys[ 7], "RIGHT");   //  7  RIGHT
+        strcpy(keys[ 8], "0");       //  8  L1
+        strcpy(keys[ 9], "1");       //  9  R1
+        strcpy(keys[10], "F12");     // 10  L2
+        strcpy(keys[11], "F11");     // 11  R2
+        strcpy(keys[12], "F10");     // 12  L3
+        strcpy(keys[13], "F9");      // 13  R3
+        strcpy(keys[14], "F5");      // 14  START
+        strcpy(keys[15], "ESC");     // 15  SELECT
+        // keys[16] HOME = vazio (sem mapeamento)
+        valid = true;
+    }
 };
 
 // Find the GP_BUTTONS[] index for an ini key name ("A", "UP", ...). -1 if none.

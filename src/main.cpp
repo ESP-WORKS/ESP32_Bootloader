@@ -40,7 +40,7 @@ int ps2DatPin    = 32;
 int ps2ClkPin    = 33;
 int kbdConfigIdx = 0;
 int magicBtnPin  = 36;  // default; sobrescrito pelo loadRC() via magicb= no bootl.rc
-int autoStartTime = 3;  // segundos da janela de autoboot; lido de autostarttime= no bootl.rc
+int autoStartTime = 10;  // segundos da janela de autoboot (default); lido de autostarttime= no bootl.rc
 String blInstalledVersion = "";  // lido do bootl.rc (version=); default BL_VERSION se ausente
 int blAccepted = 0;              // lido do bootl.rc (accepted=); 1 = disclaimer aceito
 
@@ -348,18 +348,15 @@ void sendKeymapForBoot(const char* folderPath) {
 
     Keymap km;
     if (!loadKeymap(folderPath, km)) {
-        // No keymap.ini: still send the emulator name so the T-Display can show it.
-        // No button triples go out (count stays 0), so the T-Display keeps its own
-        // default mapping -- only the name is transmitted.
-        km.clear();
+        // No keymap.ini: send the default mapping + emulator name.
+        km.loadDefaults();
         const char* base = folderPath;
         while (*base == '/') base++;                 // strip leading slash(es)
         const char* slash = strrchr(base, '/');      // in case of a nested path
         if (slash) base = slash + 1;
         strncpy(km.name, base, sizeof(km.name) - 1);
         km.name[sizeof(km.name) - 1] = '\0';
-        km.valid = true;
-        Serial.printf("[KEYMAP] no ini -> sending name only ('%s')\n", km.name);
+        Serial.printf("[KEYMAP] no ini -> sending defaults + name ('%s')\n", km.name);
     }
 
     // Log what was parsed, before touching any hardware.
@@ -596,29 +593,56 @@ static bool ota0HasValidApp() {
     return (magic == 0xE9);
 }
 
-// Shows a short "press any key for menu" window. Returns true if a key was pressed
-// (open the menu), false on timeout (boot the installed emulator). Needs PS/2 ready.
-static bool autobootWindow(uint32_t windowMs) {
-    fillRect(0, 0, HRES, VRES, C_BLACK);
-    drawLogo((HRES - LOGO_W) / 2, 40);
+// Shows the autoboot screen with gamepad image and keymap labels.
+// Returns:  1 = ESC pressed (open the menu)
+//           0 = timeout or any other key (boot the installed emulator)
+// The emulator path is read from NVS so we can load its keymap and
+// display the button mappings around the gamepad artwork.
+static int autobootWindow(uint32_t windowMs) {
+    // Load keymap for the installed emulator so we can show button labels.
+    Keymap km;
+    km.clear();
+    prefs.begin("sdloader", true);
+    String bootPath = prefs.getString("path", "");
+    prefs.end();
+    if (bootPath.length() > 0 && bootPath != "/") {
+        if (!loadKeymap(bootPath.c_str(), km)) {
+            // No keymap.ini — use default mapping so buttons show on screen
+            km.loadDefaults();
+            // Set emulator name from folder
+            const char* base = bootPath.c_str();
+            while (*base == '/') base++;
+            const char* slash = strrchr(base, '/');
+            if (slash) base = slash + 1;
+            strncpy(km.name, base, sizeof(km.name) - 1);
+            km.name[sizeof(km.name) - 1] = '\0';
+        }
+    } else {
+        // No emulator path in NVS — still show default mapping
+        km.loadDefaults();
+    }
 
-    drawString(82, 60, "Press any key for the menu", C_YELLOW, C_BLACK);
+    // Draw the full autoboot screen: logo, emulator name, gamepad, labels, hint
+    drawAutobootScreen(km.valid ? &km : nullptr);
 
+    // Countdown loop: ESC = menu, any other key = boot now, timeout = boot
     ps2_flush();
     uint32_t start = millis();
     int lastSec = -1;
     while (millis() - start < windowMs) {
-        if (ps2_available()) { ps2_get_key(); return true; }   // any key -> menu
+        if (ps2_available()) {
+            uint8_t key = ps2_get_key();
+            if (key == KEY_ESC) return 1;   // ESC -> open menu
+            if (key != 0) return 0;         // any other key -> boot immediately
+        }
         int sec = (int)((windowMs - (millis() - start)) / 1000) + 1;
         if (sec != lastSec) {
             lastSec = sec;
-            char cd[24];
-            snprintf(cd, sizeof(cd), "Booting in %ds ", sec);
-            drawString(122, 150, cd, C_CYAN, C_BLACK);
+            drawAutobootCountdown(sec);
         }
         delay(10);
     }
-    return false;
+    return 0;   // timeout -> boot
 }
 
 void setup() {
@@ -690,12 +714,13 @@ void setup() {
     ps2_flush();
     wifiSetupIfNeeded();
 
-    // --- Autoboot: if something is already flashed in ota_0, boot it directly
-    //     unless the user presses a key during the short window. ---
+    // --- Autoboot: if something is already flashed in ota_0, boot it directly.
+    //     ESC = open menu. Any other key or timeout = boot the emulator. ---
     if (ota0HasValidApp()) {
-        if (!autobootWindow((uint32_t)autoStartTime * 1000)) {
+        int abResult = autobootWindow((uint32_t)autoStartTime * 1000);
+        if (abResult == 0) {
+            // Timeout or non-ESC key -> boot the installed emulator
             Serial.println("Autoboot: launching installed emulator");
-            // Recover the last-installed emulator path from NVS to send its keymap.
             prefs.begin("sdloader", true);
             String bootPath = prefs.getString("path", "");
             prefs.end();
@@ -706,7 +731,7 @@ void setup() {
             bootEmulatorDirect();   // boots ota_0, does not return
             return;
         }
-        // key pressed -> fall through to the menu
+        // ESC pressed -> fall through to the menu
         fillRect(0, 0, HRES, VRES, C_BLACK);
         drawHeader();
     }

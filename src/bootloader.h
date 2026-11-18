@@ -13,6 +13,8 @@
 #include "nvs_flash.h"
 #include "esp_efuse.h"
 #include "logo.h"
+#include "gamepad.h"
+#include "keymap.h"
 
 // SD pinout — same scheme as ESPectrum FileUtils / hardpins.h
 // CLK/MOSI/CS are shared; only MISO differs by board/chip package

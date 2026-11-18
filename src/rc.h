@@ -45,8 +45,8 @@ extern String blInstalledVersion;
 // Flag de aceite do disclaimer (chave accepted= do bootl.rc). 1 = já aceitou.
 extern int blAccepted;
 
-// Tempo (em segundos) da janela de autoboot. Chave autostarttime= do bootl.rc.
-// Default 3 se a chave não existir (e nesse caso é gravada).
+// Tempo (em segundos) da janela de autoboot. Chave autostarttime= no bootl.rc.
+// Default 10 se a chave não existir (e nesse caso é gravada).
 extern int autoStartTime;
 
 // ---------------------------------------------------------------------------

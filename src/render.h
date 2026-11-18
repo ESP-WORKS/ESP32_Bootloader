@@ -52,6 +52,151 @@ void drawLogo(int x, int y) {
     cv.drawBitmap(x, y, logoBitmap);
 }
 
+// Same path as the folder preview BMPs (drawEmulatorImage, 8bpp):
+// createRawPixel(RGB222) -> setRawPixel, straight into the framebuffer.
+// gamepad_data[] is already RGB222 packed R | G<<2 | B<<4 (values 0..63).
+void drawGamepad(int x, int y) {
+    uint8_t rawPal[64];
+    for (int i = 0; i < 64; i++)
+        rawPal[i] = DisplayController.createRawPixel(
+            RGB222(i & 3, (i >> 2) & 3, (i >> 4) & 3));
+
+    const uint8_t* p = gamepad_data;
+    for (int ry = 0; ry < GPAD_H; ry++) {
+        int sy = y + ry;
+        for (int rx = 0; rx < GPAD_W; rx++, p++)
+            DisplayController.setRawPixel(x + rx, sy, rawPal[*p & 63]);
+    }
+}
+
+// ===========================================================================
+// Autoboot screen layout (320 x 240)
+//
+//   y=0      logo (o mais no topo que cabe)
+//   y=40     gamepad.img 160x160, centrado  (arte útil ~ (26,32)-(133,119))
+//   y=220    "Press any key for the menu"
+//   y=228    countdown  (o mais embaixo que cabe)
+//
+// Labels do keymap: offsets (ox, oy) RELATIVOS ao canto superior esquerdo
+// do gamepad. Pixel na tela = (AUTOBOOT_GPAD_X + ox, AUTOBOOT_GPAD_Y + oy).
+// Mova AUTOBOOT_GPAD_X/Y para deslocar o controle; os labels acompanham.
+// Para um botão específico, edite só a linha correspondente em
+// AUTOBOOT_GP_LABELS[] — o índice é o mesmo de GP_BUTTONS[] / keymap.ini.
+//
+// align: 0 = ox é a borda esquerda do texto
+//        1 = ox é a borda direita  (texto cresce para a esquerda)
+//        2 = ox é o centro do texto
+// ===========================================================================
+#define AUTOBOOT_LOGO_X   ((HRES - LOGO_W) / 2)
+#define AUTOBOOT_LOGO_Y   0
+#define AUTOBOOT_GPAD_X   ((HRES - GPAD_W) / 2)   // 80
+#define AUTOBOOT_GPAD_Y   40
+#define AUTOBOOT_HINT_Y   (VRES - 24)             // 216  FONT_6x12 "ESC=Menu"
+#define AUTOBOOT_COUNT_Y  (VRES - 12)             // 228  FONT_6x12
+#define AUTOBOOT_NAME_Y   (LOGO_H + 2)            // 20   FONT_6x12, under logo
+
+#define GP_LBL_LEFT    0
+#define GP_LBL_RIGHT   1
+#define GP_LBL_CENTER  2
+#define GP_LBL_CHAR_W  6                          // FONT_6x12 glyph width
+
+struct AutobootGpLabel {
+    int16_t ox;
+    int16_t oy;
+    uint8_t align;
+};
+
+// Centros visuais APROXIMADOS dos botões DENTRO do gamepad.img 160x160
+// (para você reposicionar um label perto do botão certo):
+//
+//            L2 (45,36)                    R2 (115,36)
+//            L1 (42,48)                    R1 (118,48)
+//         UP (48,58)                    Y (112,58)
+//   LEFT (36,70)  RIGHT (60,70)    X (100,70)  B (124,70)
+//        DOWN (48,82)                   A (112,82)
+//        L3 (55,100)   HOME (80,88)    R3 (105,100)
+//              SELECT (70,78)  START (90,78)
+//
+// ox negativo = esquerda da imagem; ox>=160 = direita da imagem.
+// Com FONT_6x12 (12px alto), espaçamento vertical ~14px entre labels.
+// Ajuste ox/oy aqui para reposicionar qualquer label individualmente.
+static const AutobootGpLabel AUTOBOOT_GP_LABELS[GP_BUTTON_COUNT] = {
+    //                                              ox    oy   align
+    /*  0  A       (cruz, baixo do losango)     */ { 164,  82, GP_LBL_LEFT   },
+    /*  1  B       (bola, direita do losango)   */ { 164,  68, GP_LBL_LEFT   },
+    /*  2  X       (quadrado, esquerda)         */ { 164,  54, GP_LBL_LEFT   },
+    /*  3  Y       (triângulo, topo)            */ { 164,  40, GP_LBL_LEFT   },
+    /*  4  UP      (dpad cima)                  */ {  -4,  40, GP_LBL_RIGHT  },
+    /*  5  DOWN    (dpad baixo)                 */ {  -4,  68, GP_LBL_RIGHT  },
+    /*  6  LEFT    (dpad esquerda)              */ {  -4,  54, GP_LBL_RIGHT  },
+    /*  7  RIGHT   (dpad direita)               */ {  -4,  82, GP_LBL_RIGHT  },
+    /*  8  L1      (shoulder esquerdo)          */ {  -4,  26, GP_LBL_RIGHT  },
+    /*  9  R1      (shoulder direito)           */ { 164,  26, GP_LBL_LEFT   },
+    /* 10  L2      (trigger esquerdo, topo)     */ {  -4,  12, GP_LBL_RIGHT  },
+    /* 11  R2      (trigger direito, topo)      */ { 164,  12, GP_LBL_LEFT   },
+    /* 12  L3      (click analogico esquerdo)   */ {  -4,  96, GP_LBL_RIGHT  },
+    /* 13  R3      (click analogico direito)    */ { 164,  96, GP_LBL_LEFT   },
+    /* 14  START                                */ { 164, 118, GP_LBL_LEFT   },
+    /* 15  SELECT                               */ {  -4, 118, GP_LBL_RIGHT  },
+    /* 16  HOME    (botao central, abaixo)      */ {  80, 136, GP_LBL_CENTER },
+};
+
+static void drawAutobootLabel(int ox, int oy, uint8_t align,
+                              const char* btn, const char* key) {
+    char buf[28];
+    snprintf(buf, sizeof(buf), "%s=%s", btn, (key && key[0]) ? key : "--");
+    int w = (int)strlen(buf) * GP_LBL_CHAR_W;   // GP_LBL_CHAR_W = 6 (FONT_6x12)
+    int x = AUTOBOOT_GPAD_X + ox;
+    int y = AUTOBOOT_GPAD_Y + oy;
+    if (align == GP_LBL_RIGHT)  x -= w;
+    if (align == GP_LBL_CENTER) x -= w / 2;
+    if (x < 0) x = 0;
+    if (x + w > HRES) x = HRES - w;
+    if (y < 0) y = 0;
+    if (y + 12 > VRES) y = VRES - 12;
+    drawString(x, y, buf, C_GREEN, C_BLACK);     // FONT_6x12 (default), verde
+}
+
+void drawAutobootKeymap(const Keymap* km) {
+    for (int i = 0; i < GP_BUTTON_COUNT; i++) {
+        const AutobootGpLabel& L = AUTOBOOT_GP_LABELS[i];
+        const char* key = (km && km->keys[i][0]) ? km->keys[i] : "--";
+        drawAutobootLabel(L.ox, L.oy, L.align, GP_BUTTONS[i].iniName, key);
+    }
+}
+
+void drawAutobootCountdown(int sec) {
+    fillRect(0, AUTOBOOT_COUNT_Y, HRES, 12, C_BLACK);
+    char cd[28];
+    snprintf(cd, sizeof(cd), "Booting in %ds", sec);
+    int w = (int)strlen(cd) * 6;                 // FONT_6x12
+    int x = (HRES - w) / 2;
+    if (x < 0) x = 0;
+    drawString(x, AUTOBOOT_COUNT_Y, cd, C_CYAN, C_BLACK);
+}
+
+void drawAutobootScreen(const Keymap* km) {
+    fillRect(0, 0, HRES, VRES, C_BLACK);
+    drawLogo(AUTOBOOT_LOGO_X, AUTOBOOT_LOGO_Y);
+
+    // Nome do emulador centralizado logo abaixo do logo (FONT_6x12)
+    if (km && km->name[0]) {
+        int w = (int)strlen(km->name) * GP_LBL_CHAR_W;
+        int x = (HRES - w) / 2;
+        if (x < 0) x = 0;
+        drawString(x, AUTOBOOT_NAME_Y, km->name, C_CYAN, C_BLACK);
+    }
+
+    // Hint: ESC abre o menu, qualquer outra tecla pula direto pro emulador
+    const char* hint = "ESC=Menu";
+    int hw = (int)strlen(hint) * GP_LBL_CHAR_W;
+    drawString((HRES - hw) / 2, AUTOBOOT_HINT_Y, hint, C_YELLOW, C_BLACK);
+
+    cv.waitCompletion(false);   // drain Canvas before setRawPixel (same as menu images)
+    drawGamepad(AUTOBOOT_GPAD_X, AUTOBOOT_GPAD_Y);
+    drawAutobootKeymap(km);
+}
+
 // ---------------------------------------------------------------------------
 // Speaker
 // ---------------------------------------------------------------------------
