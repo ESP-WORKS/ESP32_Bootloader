@@ -173,6 +173,93 @@ void ps2_init() {
     ps2host.begin();
 }
 
+enum Ps2PortDev { PS2DEV_UNKNOWN = 0, PS2DEV_KEYBOARD, PS2DEV_TDISPLAY };
+static Ps2PortDev gKbdPortDev = PS2DEV_UNKNOWN;
+
+static bool ps2host_wait_byte(uint8_t* out, uint32_t timeoutMs) {
+    uint32_t t = millis();
+    while (millis() - t < timeoutMs) {
+        int b = ps2host.read();
+        if (b >= 0) {
+            *out = (uint8_t)b;
+            return true;
+        }
+        delay(1);
+    }
+    return false;
+}
+
+static bool ps2host_wait_seq(const uint8_t* seq, int n, uint32_t timeoutMs) {
+    int matched = 0;
+    uint32_t t = millis();
+    while (millis() - t < timeoutMs) {
+        int b = ps2host.read();
+        if (b < 0) {
+            delay(1);
+            continue;
+        }
+        uint8_t ub = (uint8_t)b;
+        if (ub == seq[matched]) {
+            matched++;
+            if (matched == n) return true;
+        } else {
+            matched = (ub == seq[0]) ? 1 : 0;
+        }
+    }
+    return false;
+}
+
+static Ps2PortDev probe_keyboard_port() {
+    ps2host.flushRx();
+    delay(50);
+    {
+        uint8_t b;
+        uint32_t t = millis();
+        while (millis() - t < 80) {
+            if (!ps2host_wait_byte(&b, 10)) break;
+            Serial.printf("[PS2] unsolicited 0x%02X\n", b);
+            if (b == 0xAA || b == 0xFC) {
+                Serial.println("[PS2] porta: teclado (BAT)");
+                return PS2DEV_KEYBOARD;
+            }
+        }
+    }
+    ps2host.flushRx();
+
+    const uint8_t echo = 0xEE;
+    if (!ps2host_send_bytes(&echo, 1)) {
+        Serial.println("[PS2] porta: vazia (echo sem clock)");
+        return PS2DEV_UNKNOWN;
+    }
+    {
+        uint8_t b;
+        uint32_t t = millis();
+        while (millis() - t < 150) {
+            if (!ps2host_wait_byte(&b, 20)) continue;
+            Serial.printf("[PS2] echo rx 0x%02X\n", b);
+            if (b == 0xEE) {
+                Serial.println("[PS2] porta: teclado (echo)");
+                return PS2DEV_KEYBOARD;
+            }
+        }
+    }
+
+    ps2host.flushRx();
+    uint8_t ping[4] = { PS2TX_MAGIC0, PS2TX_MAGIC1, PS2TX_CMD_PING, 0 };
+    ping[3] = ping[0] ^ ping[1] ^ ping[2];
+    if (!ps2host_send_bytes(ping, 4)) {
+        Serial.println("[PS2] porta: desconhecida (ping sem clock)");
+        return PS2DEV_UNKNOWN;
+    }
+    const uint8_t seq[3] = { PS2TX_PING_R0, PS2TX_PING_R1, PS2TX_PING_R2 };
+    if (ps2host_wait_seq(seq, 3, 400)) {
+        Serial.println("[PS2] porta: T-Display");
+        return PS2DEV_TDISPLAY;
+    }
+    Serial.println("[PS2] porta: desconhecida (sem reply T-Display)");
+    return PS2DEV_UNKNOWN;
+}
+
 bool ps2host_send_bytes(const uint8_t* data, int n) {
     const uint32_t tx0 = ps2host.stats().txBytes;
     const uint32_t fail0 = ps2host.stats().txFail;
@@ -248,7 +335,9 @@ uint8_t ps2_get_key() {
         while (!p1_available() && !p2_available()) delay(1);
         uint8_t k = p1_available() ? read_key_from(1) : read_key_from(2);
         if (k != 0) return k;
-        // k == 0 => era break ou lixo; volta pro loop
+        // Break ou lixo: se nao tem mais byte, devolve 0 em vez de bloquear.
+        // Sem isso o menu fica preso no "soltar seta" e nunca carrega o BMP.
+        if (!p1_available() && !p2_available()) return 0;
     }
 }
 
@@ -380,6 +469,13 @@ void sendKeymapForBoot(const char* folderPath) {
     Serial.flush();
     DisplayController.end();
     delay(20);
+
+    if (gKbdPortDev != PS2DEV_TDISPLAY) {
+        Serial.printf("[KEYMAP] skip — %s na porta do teclado\n",
+                      gKbdPortDev == PS2DEV_KEYBOARD ? "teclado" : "desconhecido");
+        Serial.flush();
+        return;
+    }
 
     Serial.println("[KEYMAP] sending packet...");
     Serial.flush();
@@ -555,7 +651,6 @@ void scanFolders() {
         const char* ename = entry.name();
         const char* bn = strrchr(ename, '/');
         bn = bn ? bn + 1 : ename;
-        Serial.printf("scanFolders[v4]: entry='%s' basename='%s'\n", ename, bn);
         if (strncasecmp(bn, "BOOTLOADER", 10) == 0) {
             Serial.println("  >>> SKIP BOOTLOADER <<<");
             entry.close();
@@ -576,7 +671,6 @@ void scanFolders() {
                 strncpy(menuEntries[menuCount].version, v.c_str(), sizeof(menuEntries[0].version)-1);
                 vf.close();
             }
-            Serial.printf("Menu: %s (%s)\n", menuEntries[menuCount].name, menuEntries[menuCount].version);
             menuCount++;
         }
         entry.close();
@@ -698,11 +792,23 @@ void setup() {
     ps2_init();
     delay(200);
     ps2_flush();
+    gKbdPortDev = probe_keyboard_port();
+    ps2_flush();
 
     {
         char kbdMsg[40];
         snprintf(kbdMsg, sizeof(kbdMsg), "DAT=GPIO%d CLK=GPIO%d", ps2DatPin, ps2ClkPin);
         statusLine(KBD_CONFIGS[kbdConfigIdx].badge, kbdMsg, C_CYAN);
+        const char* ps2lbl = "none";
+        Color ps2col = C_YELLOW;
+        if (gKbdPortDev == PS2DEV_TDISPLAY) {
+            ps2lbl = "T-Display";
+            ps2col = C_GREEN;
+        } else if (gKbdPortDev == PS2DEV_KEYBOARD) {
+            ps2lbl = "Keyboard";
+            ps2col = C_CYAN;
+        }
+        statusLine("PS/2 port", ps2lbl, ps2col);
     }
 
     // Configura magic button (lido do bootl.rc; GPIO36 INPUT-ONLY, pull-up externo obrigatório)
@@ -779,7 +885,7 @@ void setup() {
             fillRect(0, MENU_Y_START, HRES, VRES - MENU_Y_START, C_BLACK);
             statusY = MENU_Y_START;
             statusLine("NO EMULATORS FOUND", C_RED);
-            statusLine("(F1 = maintenance menu)", C_CYAN);
+            statusLine("(F1 / 1 / Right = maintenance menu)", C_CYAN);
             statusLine("Download emulators now? Y/N", C_YELLOW);
   
 
@@ -793,7 +899,7 @@ void setup() {
                 fillRect(0, 0, HRES, VRES, C_BLACK);
                 drawHeader();
                 scanFolders();                       // pick up whatever was installed
-            } else if (key == KEY_F1 || key == KEY_1) {
+            } else if (key == KEY_F1 || key == KEY_1 || key == KEY_RIGHT) {
                 showMaintenanceMenu();
                 ps2_flush();
                 fillRect(0, 0, HRES, VRES, C_BLACK);

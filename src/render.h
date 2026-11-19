@@ -259,7 +259,7 @@ void drawHeader() {
     drawString(130, 20, VERSION, C_WHITE, C_BLACK);
     drawString(38, 32, "by FG1998 - www.alternativebits.com/esp32", C_CYAN, C_BLACK);
     drawString(30, 44, "Q/UP - A/DOWN - ENTER", C_WHITE,   C_BLACK);    
-    drawString(200, 44, "F1/1=Menu/Help", C_MAGENTA, C_BLACK);
+    drawString(188, 44, "F1/1/Right=Menu", C_MAGENTA, C_BLACK);
     drawLine(8, 56, HRES - 9, C_BLUE);
     drawKbdBadge();
 }
@@ -301,8 +301,17 @@ void drawMenuRow(int idx, int selected, int scrollOffset, const String& currentP
 }
 
 // Clears the preview image area.
+// Images are blitted with setRawPixel (framebuffer). Canvas fillRect alone
+// does not erase that, so a missing BMP would leave the previous console.
 void clearEmulatorImage() {
     fillRect(EMU_IMG_X, EMU_IMG_Y, EMU_IMG_W, EMU_IMG_H, C_BLACK);
+    cv.waitCompletion(false);
+    uint8_t black = DisplayController.createRawPixel(RGB222(0, 0, 0));
+    for (int y = 0; y < EMU_IMG_H; y++) {
+        int py = EMU_IMG_Y + y;
+        for (int x = 0; x < EMU_IMG_W; x++)
+            DisplayController.setRawPixel(EMU_IMG_X + x, py, black);
+    }
 }
 
 // Footer info line: first line of /assets/<folderName>.txt, drawn below the menu area.
@@ -333,13 +342,22 @@ void drawEmulatorInfo(const char* folderPath) {
 
     char txtPath[200];
     snprintf(txtPath, sizeof(txtPath), "/assets/%s.txt", name);
-    if (!SD.exists(txtPath)) return;
+    Serial.printf("[emutxt] folder='%s' path='%s'\n", name, txtPath);
+    if (!SD.exists(txtPath)) {
+        Serial.println("[emutxt] NOT FOUND");
+        cv.waitCompletion(false);
+        return;
+    }
 
     File f = SD.open(txtPath, FILE_READ);
-    if (!f) return;
+    if (!f) {
+        Serial.println("[emutxt] open FAIL");
+        return;
+    }
     String line = f.readStringUntil('\n');
     f.close();
     line.trim();
+    Serial.printf("[emutxt] bytes=%d line='%s'\n", line.length(), line.c_str());
     if (line.length() == 0) return;
 
     strncpy(emuInfoText, line.c_str(), sizeof(emuInfoText) - 1);
@@ -393,16 +411,33 @@ bool drawEmulatorImage(const char* folderPath) {
 
     char imgPath[200];
     snprintf(imgPath, sizeof(imgPath), "/assets/%s.bmp", name);
+    Serial.printf("[emuimg] folder='%s' path='%s' ps2avail=%d\n",
+                  name, imgPath, (int)ps2_available());
 
-    if (!SD.exists(imgPath)) return true;
+    if (!SD.exists(imgPath)) {
+        Serial.println("[emuimg] NOT FOUND (slot cleared)");
+        return true;
+    }
 
     File f = SD.open(imgPath, FILE_READ);
-    if (!f) return true;
+    if (!f) {
+        Serial.println("[emuimg] open FAIL");
+        return true;
+    }
+    Serial.printf("[emuimg] opened size=%u\n", (unsigned)f.size());
 
     uint8_t header[54];
     int rd = f.read(header, 54);
-    if (rd != 54) { f.close(); return true; }
-    if (header[0] != 'B' || header[1] != 'M') { f.close(); return true; }
+    if (rd != 54) {
+        Serial.printf("[emuimg] header short rd=%d\n", rd);
+        f.close();
+        return true;
+    }
+    if (header[0] != 'B' || header[1] != 'M') {
+        Serial.printf("[emuimg] not BMP magic=%02X %02X\n", header[0], header[1]);
+        f.close();
+        return true;
+    }
 
     uint32_t dataOffset = header[10] | (header[11] << 8) | (header[12] << 16) | (header[13] << 24);
     int32_t  w  = header[18] | (header[19] << 8) | (header[20] << 16) | (header[21] << 24);
@@ -413,6 +448,9 @@ bool drawEmulatorImage(const char* folderPath) {
 
     bool topDown = false;
     if (h < 0) { h = -h; topDown = true; }   // negative height = top-down BMP
+
+    Serial.printf("[emuimg] w=%d h=%d bpp=%u off=%u dib=%u topDown=%d\n",
+                  (int)w, (int)h, bpp, dataOffset, headerSize, (int)topDown);
 
     int drawW = (w < EMU_IMG_W) ? w : EMU_IMG_W;
     int drawH = (h < EMU_IMG_H) ? h : EMU_IMG_H;
@@ -437,15 +475,25 @@ bool drawEmulatorImage(const char* folderPath) {
     // Read the whole pixel area into PSRAM in ONE SD read (seek-per-row over SPI is slow).
     uint32_t pixBytes = (uint32_t)rowSize * h;
     uint8_t* pix = (uint8_t*)ps_malloc(pixBytes);
-    if (!pix) { f.close(); return true; }
+    if (!pix) {
+        Serial.printf("[emuimg] ps_malloc FAIL bytes=%u\n", pixBytes);
+        f.close();
+        return true;
+    }
     f.seek(dataOffset);
-    f.read(pix, pixBytes);
+    int got = f.read(pix, pixBytes);
     f.close();
+    Serial.printf("[emuimg] pixels got=%d want=%u rowSize=%d draw=%dx%d\n",
+                  got, pixBytes, rowSize, drawW, drawH);
 
     // Write straight to the framebuffer (no Canvas queue). Abort on keypress so
     // navigation never waits for the image.
     for (int ry = 0; ry < drawH; ry++) {
-        if (ps2_available()) { free(pix); return false; }  // key arrived: stop, retry later
+        if (ps2_available()) {
+            Serial.printf("[emuimg] ABORT row=%d/%d\n", ry, drawH);
+            free(pix);
+            return false;
+        }
 
         int srcRow = topDown ? ry : (h - 1 - ry);
         uint8_t* row = pix + (uint32_t)srcRow * rowSize;
@@ -464,6 +512,7 @@ bool drawEmulatorImage(const char* folderPath) {
     }
 
     free(pix);
+    Serial.println("[emuimg] OK");
     return true;
 }
 
@@ -495,105 +544,181 @@ void updateMenuSelection(int oldSelected, int newSelected,
     cv.waitCompletion(false);  // drain FabGL queue before next key; prevents lockup on fast nav
 }
 
-void drawMaintenanceScreen() {
-    fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-    drawString(10, MENU_Y_START,       "*** MENU ***",                   C_YELLOW, C_BLACK);
-    drawString(10, MENU_Y_START +  11, "N - Clear Bootloader NVS",       C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  22, "A - Clear ALL NVS",              C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  33, "O - Clear Otadata",              C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  44, "R - Reset ESP32",                C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  55, "D - Download / Update Emulators", C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  66, "E - Extract Firmware (Eremus)",  C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  77, "I - Show Disclaimer",            C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  88, "C - Reset Wifi Credentials",     C_WHITE,  C_BLACK);
-    drawString(10, MENU_Y_START +  99, "ESC/SPACE - Cancel",             C_CYAN,   C_BLACK);
+enum {
+    MAINT_CLEAR_BL = 0,
+    MAINT_CLEAR_ALL,
+    MAINT_CLEAR_OTA,
+    MAINT_RESET,
+    MAINT_DOWNLOAD,
+    MAINT_EXTRACT,
+    MAINT_DISCLAIMER,
+    MAINT_WIFI,
+    MAINT_CANCEL,
+    MAINT_COUNT
+};
 
-    drawString(10, MENU_Y_START + 120, "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
-    drawString(10, MENU_Y_START + 129, "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
-    drawString(10, MENU_Y_START + 138, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra",         C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+static const char* const MAINT_ITEMS[MAINT_COUNT] = {
+    "Clear Bootloader NVS",
+    "Clear ALL NVS",
+    "Clear Otadata",
+    "Reset ESP32",
+    "Download / Update Emulators",
+    "Extract Firmware (Eremus)",
+    "Show Disclaimer",
+    "Reset Wifi Credentials",
+    "Cancel",
+};
+
+static const int MAINT_BAR_X = 8;
+static const int MAINT_BAR_W = 304;
+
+void drawMaintRow(int idx, int selected) {
+    if (idx < 0 || idx >= MAINT_COUNT) return;
+    bool isSel = (idx == selected);
+    Color ink   = isSel ? C_BLACK : C_GREEN;
+    Color paper = isSel ? C_GREEN : C_BLACK;
+    int y = MENU_Y_START + idx * MENU_LINE_H;
+    fillRect(MAINT_BAR_X, y, MAINT_BAR_W, MENU_LINE_H, paper);
+    cv.selectFont(&fabgl::FONT_6x12);
+    drawString(MAINT_BAR_X + 2, y, MAINT_ITEMS[idx], ink, paper);
+}
+
+void drawMaintenanceScreen(int selected) {
+    fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
+    for (int i = 0; i < MAINT_COUNT; i++) drawMaintRow(i, selected);
+    int cy = MENU_Y_START + MAINT_COUNT * MENU_LINE_H + 8;
+    drawString(10, cy,      "ESP32 BootLoader by FG1998 - github.com/fg1998", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, cy + 9,  "Download and improvements by Joselito Oliveira", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+    drawString(10, cy + 18, "Tested by Caca Couto, Miguel Roberto and Rodolfo Guerra", C_WHITE, C_BLACK, &fabgl::FONT_5x7);
+}
+
+static void updateMaintSelection(int oldSelected, int newSelected) {
+    if (oldSelected == newSelected) return;
+    drawMaintRow(oldSelected, newSelected);
+    drawMaintRow(newSelected, newSelected);
+    cv.waitCompletion(false);
+}
+
+static bool maintConfirm(const char* msg) {
+    fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
+    drawString(10, MENU_Y_START, msg, C_YELLOW, C_BLACK);
+    const char* opts[2] = { "Confirm", "Cancel" };
+    int selected = 1;
+    auto drawOpt = [&](int idx) {
+        bool isSel = (idx == selected);
+        Color ink   = isSel ? C_BLACK : C_GREEN;
+        Color paper = isSel ? C_GREEN : C_BLACK;
+        int y = MENU_Y_START + 16 + idx * MENU_LINE_H;
+        fillRect(MAINT_BAR_X, y, MAINT_BAR_W, MENU_LINE_H, paper);
+        cv.selectFont(&fabgl::FONT_6x12);
+        drawString(MAINT_BAR_X + 2, y, opts[idx], ink, paper);
+    };
+    drawOpt(0);
+    drawOpt(1);
+    cv.waitCompletion(false);
+    while (true) {
+        uint8_t key = ps2_get_key();
+        if (key == 0) continue;
+        speakerClick();
+        if ((key == KEY_UP || key == KEY_UP_EXT || key == KEY_Q) && selected > 0) {
+            selected = 0;
+            drawOpt(0);
+            drawOpt(1);
+            cv.waitCompletion(false);
+        } else if ((key == KEY_DOWN || key == KEY_DOWN_EXT || key == KEY_A_NAV) && selected < 1) {
+            selected = 1;
+            drawOpt(0);
+            drawOpt(1);
+            cv.waitCompletion(false);
+        } else if (key == KEY_ENTER) {
+            return selected == 0;
+        } else if (key == KEY_ESC || key == KEY_SPACE) {
+            return false;
+        }
+    }
 }
 
 void showMaintenanceMenu() {
-    drawMaintenanceScreen();
-
+    int selected = 0;
+    drawMaintenanceScreen(selected);
 
     while (true) {
         uint8_t key = ps2_get_key();
         if (key == 0) continue;
+        speakerClick();
 
-        // D - Download / Update Emulators: runs the WiFi/HTTP updater directly.
-        if (key == KEY_D_KEY) {
+        if ((key == KEY_UP || key == KEY_UP_EXT || key == KEY_Q) && selected > 0) {
+            int old = selected;
+            selected--;
+            updateMaintSelection(old, selected);
+            continue;
+        }
+        if ((key == KEY_DOWN || key == KEY_DOWN_EXT || key == KEY_A_NAV) && selected < MAINT_COUNT - 1) {
+            int old = selected;
+            selected++;
+            updateMaintSelection(old, selected);
+            continue;
+        }
+        if (key == KEY_ESC || key == KEY_SPACE ||
+            (key == KEY_ENTER && selected == MAINT_CANCEL)) {
+            break;
+        }
+        if (key != KEY_ENTER) continue;
+
+        if (selected == MAINT_DOWNLOAD) {
             runUpdater();
             ps2_flush();
             statusY = statusY_original;
-            drawMaintenanceScreen();
+            drawMaintenanceScreen(selected);
             continue;
         }
-
-        // I - Show Disclaimer (re-display; Y/N just closes, no reset).
-        if (key == KEY_I_KEY) {
+        if (selected == MAINT_DISCLAIMER) {
             showDisclaimer();
             ps2_flush();
-            drawMaintenanceScreen();
+            drawMaintenanceScreen(selected);
             continue;
         }
 
         const char* msg  = nullptr;
         const char* done = nullptr;
-
-        if      (key == KEY_N_KEY) { msg = "Clear Bootloader NVS?"; done = "Bootloader NVS cleared!"; }
-        else if (key == KEY_A_KEY) { msg = "Clear ALL NVS?";         done = "ALL NVS cleared!"; }
-        else if (key == KEY_O_KEY) { msg = "Clear Otadata?";         done = "Otadata cleared!"; }
-        else if (key == KEY_R_KEY) { msg = "Reset ESP32?";           done = "Resetting..."; }
-
-        else if (key == KEY_E_KEY) { msg = "Extract Firmware?";      done = "Firmware extracted!"; }
-        else if (key == KEY_C_KEY) { msg = "Reset WiFi Credentials?"; done = "WiFi reset! Restarting..."; }
-        else if (key == KEY_ESC || key == KEY_SPACE) { Serial.println("ESC pressed");  break; }
-
+        if      (selected == MAINT_CLEAR_BL)  { msg = "Clear Bootloader NVS?";     done = "Bootloader NVS cleared!"; }
+        else if (selected == MAINT_CLEAR_ALL) { msg = "Clear ALL NVS?";            done = "ALL NVS cleared!"; }
+        else if (selected == MAINT_CLEAR_OTA) { msg = "Clear Otadata?";            done = "Otadata cleared!"; }
+        else if (selected == MAINT_RESET)     { msg = "Reset ESP32?";              done = "Resetting..."; }
+        else if (selected == MAINT_EXTRACT)   { msg = "Extract Firmware?";         done = "Firmware extracted!"; }
+        else if (selected == MAINT_WIFI)      { msg = "Reset WiFi Credentials?";   done = "WiFi reset! Restarting..."; }
         if (!msg) continue;
 
-        fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-        drawString(10, MENU_Y_START,      msg,                         C_YELLOW, C_BLACK);
-        drawString(10, MENU_Y_START + 14, "Y to confirm, N to cancel", C_WHITE,  C_BLACK);
-
-        uint8_t conf = 0;
-        while (conf == 0) conf = ps2_get_key();
-
-        if (conf != 0x35) {
-            // N — cancela e volta ao menu
-            drawMaintenanceScreen();
+        if (!maintConfirm(msg)) {
+            drawMaintenanceScreen(selected);
             continue;
         }
 
-        if      (key == KEY_N_KEY) { prefs.begin("sdloader", false); prefs.clear(); prefs.end(); }
-        else if (key == KEY_A_KEY) { nvs_flash_erase(); nvs_flash_init(); }
-        else if (key == KEY_O_KEY) {
+        if      (selected == MAINT_CLEAR_BL)  { prefs.begin("sdloader", false); prefs.clear(); prefs.end(); }
+        else if (selected == MAINT_CLEAR_ALL) { nvs_flash_erase(); nvs_flash_init(); }
+        else if (selected == MAINT_CLEAR_OTA) {
             const esp_partition_t* otadata = esp_partition_find_first(
                 ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
             if (otadata) esp_partition_erase_range(otadata, 0, otadata->size);
         }
-        else if (key == KEY_R_KEY) {
-            Serial.println("Reset ESP32 selected");
+        else if (selected == MAINT_RESET) {
             shutdownForReboot();
             ESP.restart();
         }
-        else if (key == KEY_E_KEY) {
-            Serial.println("Extract Firmware selected");
+        else if (selected == MAINT_EXTRACT) {
             runExtractFirmware();
             ps2_flush();
             statusY = statusY_original;
-            drawMaintenanceScreen();
+            drawMaintenanceScreen(selected);
             continue;
         }
-        else if (key == KEY_C_KEY) {
-            Serial.println("Reset WiFi credentials selected");
+        else if (selected == MAINT_WIFI) {
             if (SD.exists("/wificonfig.rc")) SD.remove("/wificonfig.rc");
-            // falls through to the "reboot" screen below
         }
 
         fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
-        drawString(10, MENU_Y_START,      done,                        C_GREEN, C_BLACK);
-        drawString(10, MENU_Y_START + 14, "Press any key to reboot",   C_WHITE, C_BLACK);
+        drawString(10, MENU_Y_START,      done,                      C_GREEN, C_BLACK);
+        drawString(10, MENU_Y_START + 14, "Press any key to reboot", C_WHITE, C_BLACK);
         while (ps2_get_key() == 0);
         shutdownForReboot();
         ESP.restart();
@@ -642,9 +767,13 @@ int runMenu() {
         // Draw the deferred preview image once navigation has paused
         if (imgPendingFor != imgShownFor &&
             (millis() - imgPendingSince) >= IMG_DELAY_MS) {
+            Serial.printf("[emuimg] swap pending=%d shown=%d path='%s'\n",
+                          imgPendingFor, imgShownFor,
+                          menuEntries[imgPendingFor].path);
             drawEmulatorInfo(menuEntries[imgPendingFor].path);   // footer text (fast)
-            if (drawEmulatorImage(menuEntries[imgPendingFor].path))
-                imgShownFor = imgPendingFor;   // only mark done if it finished (not aborted)
+            bool ok = drawEmulatorImage(menuEntries[imgPendingFor].path);
+            if (ok) imgShownFor = imgPendingFor;
+            Serial.printf("[emuimg] swap done ok=%d shown=%d\n", (int)ok, imgShownFor);
         }
 
         // Scroll the footer text sideways if it's wider than the screen.
@@ -680,7 +809,7 @@ int runMenu() {
         speakerClick();
         Serial.printf("Key: 0x%02X\n", key);
 
-        if (key == KEY_F1 || key == KEY_1) {
+        if (key == KEY_F1 || key == KEY_1 || key == KEY_RIGHT) {
             showMaintenanceMenu();
             ps2_flush();
             drawMenu(selected, scrollOffset, currentPath);
@@ -702,6 +831,8 @@ int runMenu() {
             if (selected < scrollOffset) scrollOffset--;
             updateMenuSelection(oldSelected, selected, oldScroll, scrollOffset, currentPath);
             imgPendingFor = selected; imgPendingSince = millis();
+            Serial.printf("[emuimg] nav UP sel=%d pending=%d shown=%d\n",
+                          selected, imgPendingFor, imgShownFor);
         } else if ((key == KEY_DOWN || key == KEY_DOWN_EXT || key == KEY_A_NAV) && selected < menuCount - 1) {
             int oldSelected = selected;
             int oldScroll = scrollOffset;
@@ -709,6 +840,8 @@ int runMenu() {
             if (selected >= scrollOffset + MAX_VISIBLE) scrollOffset++;
             updateMenuSelection(oldSelected, selected, oldScroll, scrollOffset, currentPath);
             imgPendingFor = selected; imgPendingSince = millis();
+            Serial.printf("[emuimg] nav DOWN sel=%d pending=%d shown=%d\n",
+                          selected, imgPendingFor, imgShownFor);
         } else if (key == KEY_PGUP || key == KEY_LEFT || key == KEY_O_KEY) {
             // Page up: jump back one full page (left arrow / O)
             if (selected > 0) {
@@ -720,8 +853,8 @@ int runMenu() {
                 drawMenu(selected, scrollOffset, currentPath);
                 imgPendingFor = selected; imgPendingSince = millis();
             }
-        } else if (key == KEY_PGDN || key == KEY_RIGHT || key == KEY_P_KEY) {
-            // Page down: jump forward one full page (right arrow / P)
+        } else if (key == KEY_PGDN || key == KEY_P_KEY) {
+            // Page down: jump forward one full page (P)
             if (selected < menuCount - 1) {
                 selected += MAX_VISIBLE;
                 if (selected > menuCount - 1) selected = menuCount - 1;

@@ -56,7 +56,7 @@
 #define KEY_UP_EXT   (0x75 | 0x80)  // up arrow (extended)
 #define KEY_DOWN_EXT (0x72 | 0x80)  // down arrow (extended)
 #define KEY_LEFT    (0x6B | 0x80)   // left arrow  -> page up
-#define KEY_RIGHT   (0x74 | 0x80)   // right arrow -> page down
+#define KEY_RIGHT   (0x74 | 0x80)   // right arrow -> maintenance menu (with F1/1)
 #define KEY_PGDN    (0x7A | 0x80)   // page down
 #define KEY_PGUP    (0x7D | 0x80)   // page up
 

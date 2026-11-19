@@ -11,7 +11,11 @@
 
 #define PS2TX_MAGIC0      0xAA
 #define PS2TX_MAGIC1      0x55
+#define PS2TX_CMD_PING    0x00
 #define PS2TX_CMD_LOADMAP 0x01
+#define PS2TX_PING_R0     0xA5
+#define PS2TX_PING_R1     0x5A
+#define PS2TX_PING_R2     0xA5
 
 bool ps2host_send_bytes(const uint8_t* data, int n);
 
