@@ -5,6 +5,7 @@
 #include "bootloader.h"
 #include "keymap.h"
 #include "ps2_tx.h"
+#include <Ps2Host.h>
 
 // --------------------------------------------------------------------------
 // Global state definitions (declared extern in bootloader.h)
@@ -24,8 +25,7 @@ volatile int ps2_bit = 0;
 volatile uint8_t ps2_data = 0;
 portMUX_TYPE ps2Mux = portMUX_INITIALIZER_UNLOCKED;
 
-// --- Porta 2 (adaptador DB9 / gamepad bridge no conector do mouse PS/2 da VGA32) ---
-// Pinos fixos: no esquema da VGA32 o mouse PS/2 esta sempre em GPIO26 (CLK) / GPIO27 (DAT).
+// --- Porta 2 (mouse PS/2 da VGA32: GPIO26 CLK / GPIO27 DAT) ---
 volatile uint8_t ps2_buffer2[PS2_BUFFER_SIZE];
 volatile int ps2_head2 = 0, ps2_tail2 = 0;
 volatile int ps2_bit2 = 0;
@@ -33,6 +33,11 @@ volatile uint8_t ps2_data2 = 0;
 portMUX_TYPE ps2Mux2 = portMUX_INITIALIZER_UNLOCKED;
 const int ps2DatPin2 = 27;
 const int ps2ClkPin2 = 26;
+
+// T-Display esta no DIN do teclado: DAT=GPIO32 CLK=GPIO33.
+const int ps2TdispDat = 32;
+const int ps2TdispClk = 33;
+static Ps2Host ps2host(ps2TdispClk, ps2TdispDat);
 
 // Pinos PS/2 e config de teclado — definidos em runtime por loadRC() após SD montar.
 // Valores iniciais C1 (padrão) para caso o SD falhe antes do loadRC().
@@ -127,10 +132,7 @@ static bool p1_available() {
     return has;
 }
 static bool p2_available() {
-    portENTER_CRITICAL(&ps2Mux2);
-    bool has = (ps2_head2 != ps2_tail2);
-    portEXIT_CRITICAL(&ps2Mux2);
-    return has;
+    return ps2host.available() > 0;
 }
 static uint8_t p1_pop() {
     uint8_t code = 0;
@@ -143,14 +145,8 @@ static uint8_t p1_pop() {
     return code;
 }
 static uint8_t p2_pop() {
-    uint8_t code = 0;
-    portENTER_CRITICAL(&ps2Mux2);
-    if (ps2_head2 != ps2_tail2) {
-        code = ps2_buffer2[ps2_tail2];
-        ps2_tail2 = (ps2_tail2 + 1) % PS2_BUFFER_SIZE;
-    }
-    portEXIT_CRITICAL(&ps2Mux2);
-    return code;
+    int b = ps2host.read();
+    return b < 0 ? 0 : (uint8_t)b;
 }
 
 void ps2_flush() {
@@ -159,11 +155,7 @@ void ps2_flush() {
     ps2_bit = 0;
     ps2_data = 0;
     portEXIT_CRITICAL(&ps2Mux);
-    portENTER_CRITICAL(&ps2Mux2);
-    ps2_head2 = ps2_tail2 = 0;
-    ps2_bit2 = 0;
-    ps2_data2 = 0;
-    portEXIT_CRITICAL(&ps2Mux2);
+    ps2host.flushRx();
 }
 
 bool ps2_available() {
@@ -171,13 +163,44 @@ bool ps2_available() {
 }
 
 void ps2_init() {
-    pinMode(ps2DatPin, INPUT_PULLUP);
-    pinMode(ps2ClkPin, INPUT_PULLUP);
-    pinMode(ps2DatPin2, INPUT_PULLUP);
-    pinMode(ps2ClkPin2, INPUT_PULLUP);
+    // Nao anexar a ISR do teclado no mesmo CLK do T-Display.
+    if (ps2ClkPin != ps2TdispClk) {
+        pinMode(ps2DatPin, INPUT_PULLUP);
+        pinMode(ps2ClkPin, INPUT_PULLUP);
+        attachInterrupt(digitalPinToInterrupt(ps2ClkPin), ps2_isr, FALLING);
+    }
     ps2_flush();
-    attachInterrupt(digitalPinToInterrupt(ps2ClkPin),  ps2_isr,  FALLING);
-    attachInterrupt(digitalPinToInterrupt(ps2ClkPin2), ps2_isr2, FALLING);
+    ps2host.begin();
+}
+
+bool ps2host_send_bytes(const uint8_t* data, int n) {
+    const uint32_t tx0 = ps2host.stats().txBytes;
+    const uint32_t fail0 = ps2host.stats().txFail;
+    for (int i = 0; i < n; i++) {
+        uint32_t t = millis();
+        while (!ps2host.write(data[i])) {
+            if (millis() - t > 300) {
+                Serial.printf("[PS2TX] fila cheia no byte %d\n", i);
+                return false;
+            }
+            delay(1);
+        }
+    }
+    uint32_t t = millis();
+    while (true) {
+        const uint32_t done =
+            (ps2host.stats().txBytes - tx0) + (ps2host.stats().txFail - fail0);
+        if (done >= (uint32_t)n) break;
+        if (millis() - t > 3000) {
+            Serial.println("[PS2TX] timeout esperando TX");
+            return false;
+        }
+        delay(1);
+    }
+    const uint32_t sent = ps2host.stats().txBytes - tx0;
+    const uint32_t fails = ps2host.stats().txFail - fail0;
+    Serial.printf("[PS2TX] enviados=%u falhas=%u\n", sent, fails);
+    return fails == 0 && sent >= (uint32_t)n;
 }
 
 // Espera o proximo byte DA MESMA PORTA (crucial — nao pode cruzar com o
@@ -223,19 +246,6 @@ static uint8_t read_key_from(int port) {
 uint8_t ps2_get_key() {
     while (true) {
         while (!p1_available() && !p2_available()) delay(1);
-        // --- DEBUG: imprime bytes brutos da porta 2 antes de processar ---
-        if (!p1_available() && p2_available()) {
-            portENTER_CRITICAL(&ps2Mux2);
-            int h = ps2_head2, t = ps2_tail2;
-            portEXIT_CRITICAL(&ps2Mux2);
-            Serial.print("[p2 raw]");
-            while (t != h) {
-                Serial.printf(" %02X", ps2_buffer2[t]);
-                t = (t + 1) % PS2_BUFFER_SIZE;
-            }
-            Serial.println();
-        }
-        // ----------------------------------------------------------------
         uint8_t k = p1_available() ? read_key_from(1) : read_key_from(2);
         if (k != 0) return k;
         // k == 0 => era break ou lixo; volta pro loop
@@ -340,9 +350,8 @@ void saveVersion(const char* path, const char* version) {
 // booting the emulator. Must run while the SD is still mounted. If the file is
 // missing or the send fails, the T-Display keeps its built-in default map.
 //
-// The port-2 ISR is detached and the VGA is stopped first, so the bit-banged
-// PS/2 timing isn't disturbed by the display DMA. The screen going black here is
-// fine — we're about to boot the emulator anyway.
+// VGA is stopped first so display DMA does not jitter the PS/2 clocks.
+// The screen going black here is fine — we're about to boot the emulator anyway.
 void sendKeymapForBoot(const char* folderPath) {
     Serial.printf("[KEYMAP] sendKeymapForBoot('%s')\n", folderPath);
 
@@ -365,11 +374,6 @@ void sendKeymapForBoot(const char* folderPath) {
         if (km.keys[i][0]) Serial.printf("   %s = %s\n", GP_BUTTONS[i].iniName, km.keys[i]);
     }
     Serial.flush();
-
-    // Stop the port-2 receive ISR so it doesn't fight the TX bit-banging.
-    Serial.println("[KEYMAP] detaching port-2 ISR");
-    Serial.flush();
-    detachInterrupt(digitalPinToInterrupt(ps2ClkPin2));
 
     // Stop the VGA to remove display-DMA jitter during the send.
     Serial.println("[KEYMAP] stopping VGA");
