@@ -11,11 +11,17 @@
 
 #define PS2TX_MAGIC0      0xAA
 #define PS2TX_MAGIC1      0x55
-#define PS2TX_CMD_PING    0x00
-#define PS2TX_CMD_LOADMAP 0x01
+#define PS2TX_CMD_PING      0x00
+#define PS2TX_CMD_LOADMAP   0x01
+#define PS2TX_CMD_LEARN_ON  0x02
+#define PS2TX_CMD_LEARN_OFF 0x03
+#define PS2TX_CMD_REMAP     0x04
 #define PS2TX_PING_R0     0xA5
 #define PS2TX_PING_R1     0x5A
 #define PS2TX_PING_R2     0xA5
+#define PS2TX_LEARN_R0    0xA5
+#define PS2TX_LEARN_R1    0x5A
+#define PS2TX_ANA_R1      0x5B
 
 bool ps2host_send_bytes(const uint8_t* data, int n);
 

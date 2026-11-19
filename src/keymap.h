@@ -32,6 +32,11 @@ static const GpButtonDef GP_BUTTONS[GP_BUTTON_COUNT] = {
     { GP_HOME,  "HOME"  },
 };
 
+static bool gpButtonPresent(int i) {
+    uint8_t id = GP_BUTTONS[i].id;
+    return id != GP_L3 && id != GP_R3;
+}
+
 // --- Key name -> PS/2 Set 2 scancode (+ extended flag) ---
 struct ScancodeEntry { const char* name; uint8_t ext; uint8_t code; };
 
@@ -86,6 +91,8 @@ static bool keyNameToScancode(const char* name, uint8_t& ext, uint8_t& code) {
     return false;
 }
 
+#define BOOTLKEY_FILE "/bootlkey.rc"
+
 // --- Keymap struct: one key name per gamepad button (empty = unused) ---
 struct Keymap {
     char name[32];                    // emulator name from the ini (optional)
@@ -98,35 +105,46 @@ struct Keymap {
         valid = false;
     }
 
-    // Preenche com o mapeamento default do T-Display.
-    // Usado na tela de autoboot quando nao existe keymap.ini.
+    // Default embutido (e template de /bootlkey.rc).
     //   A=ENTER  B=SPACE  X=M  Y=N
     //   UP/DOWN/LEFT/RIGHT = setas
     //   L1=0  R1=1  L2=F12  R2=F11
-    //   L3=F10  R3=F9  START=F5  SELECT=ESC  HOME=--
-    void loadDefaults() {
+    //   START=F5  SELECT=ESC  HOME=ESC
+    //   L3/R3 omitted — these pads have no stick-click
+    void fillBuiltinDefaults() {
         clear();
-        //                 idx  button   key
-        strcpy(keys[ 0], "ENTER");   //  0  A
-        strcpy(keys[ 1], "SPACE");   //  1  B
-        strcpy(keys[ 2], "M");       //  2  X
-        strcpy(keys[ 3], "N");       //  3  Y
-        strcpy(keys[ 4], "UP");      //  4  UP
-        strcpy(keys[ 5], "DOWN");    //  5  DOWN
-        strcpy(keys[ 6], "LEFT");    //  6  LEFT
-        strcpy(keys[ 7], "RIGHT");   //  7  RIGHT
-        strcpy(keys[ 8], "0");       //  8  L1
-        strcpy(keys[ 9], "1");       //  9  R1
-        strcpy(keys[10], "F12");     // 10  L2
-        strcpy(keys[11], "F11");     // 11  R2
-        strcpy(keys[12], "F10");     // 12  L3
-        strcpy(keys[13], "F9");      // 13  R3
-        strcpy(keys[14], "F5");      // 14  START
-        strcpy(keys[15], "ESC");     // 15  SELECT
-        // keys[16] HOME = vazio (sem mapeamento)
+        strcpy(keys[ 0], "ENTER");
+        strcpy(keys[ 1], "SPACE");
+        strcpy(keys[ 2], "M");
+        strcpy(keys[ 3], "N");
+        strcpy(keys[ 4], "UP");
+        strcpy(keys[ 5], "DOWN");
+        strcpy(keys[ 6], "LEFT");
+        strcpy(keys[ 7], "RIGHT");
+        strcpy(keys[ 8], "0");
+        strcpy(keys[ 9], "1");
+        strcpy(keys[10], "F12");
+        strcpy(keys[11], "F11");
+        strcpy(keys[14], "F5");
+        strcpy(keys[15], "ESC");
+        strcpy(keys[16], "ESC");   // HOME
         valid = true;
     }
+
+    void loadDefaults();
 };
+
+static Keymap gBootlKey;
+
+inline void Keymap::loadDefaults() {
+    if (gBootlKey.valid) {
+        for (int i = 0; i < GP_BUTTON_COUNT; i++)
+            memcpy(keys[i], gBootlKey.keys[i], sizeof(keys[0]));
+        valid = true;
+        return;
+    }
+    fillBuiltinDefaults();
+}
 
 // Find the GP_BUTTONS[] index for an ini key name ("A", "UP", ...). -1 if none.
 static int gpButtonIndexByName(const char* iniName) {
@@ -215,4 +233,47 @@ static bool loadKeymap(const char* folderPath, Keymap& km) {
     km.valid = true;
     Serial.printf("[KEYMAP] loaded %s (name='%s')\n", path, km.name);
     return true;
+}
+
+static void writeBootlKeyFile(const Keymap& km) {
+    File wf = SD.open(BOOTLKEY_FILE, FILE_WRITE);
+    if (!wf) {
+        Serial.println("[BOOTLKEY] cannot create /bootlkey.rc");
+        return;
+    }
+    for (int i = 0; i < GP_BUTTON_COUNT; i++) {
+        if (gpButtonPresent(i) && km.keys[i][0])
+            wf.printf("%s=%s\n", GP_BUTTONS[i].iniName, km.keys[i]);
+    }
+    wf.close();
+    Serial.println("[BOOTLKEY] wrote /bootlkey.rc");
+}
+
+static void ensureBootlKeyRc() {
+    gBootlKey.fillBuiltinDefaults();
+    if (!SD.exists(BOOTLKEY_FILE)) {
+        writeBootlKeyFile(gBootlKey);
+        return;
+    }
+    File f = SD.open(BOOTLKEY_FILE, FILE_READ);
+    if (!f) {
+        Serial.println("[BOOTLKEY] cannot open /bootlkey.rc");
+        return;
+    }
+    char line[64];
+    while (f.available()) {
+        int len = 0;
+        while (f.available() && len < (int)sizeof(line) - 1) {
+            char c = f.read();
+            if (c == '\n') break;
+            line[len++] = c;
+        }
+        line[len] = '\0';
+        if (len == 0) continue;
+        if (line[0] == '#' || line[0] == ';') continue;
+        keymapParseLine(line, gBootlKey);
+    }
+    f.close();
+    gBootlKey.valid = true;
+    Serial.println("[BOOTLKEY] loaded /bootlkey.rc");
 }

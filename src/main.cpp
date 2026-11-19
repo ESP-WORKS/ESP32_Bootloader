@@ -7,6 +7,9 @@
 #include "ps2_tx.h"
 #include <Ps2Host.h>
 
+// saveRC() + FabGL sit on loopTask; 8KB default trips the stack canary.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 // --------------------------------------------------------------------------
 // Global state definitions (declared extern in bootloader.h)
 // --------------------------------------------------------------------------
@@ -48,6 +51,8 @@ int magicBtnPin  = 36;  // default; sobrescrito pelo loadRC() via magicb= no boo
 int autoStartTime = 10;  // segundos da janela de autoboot (default); lido de autostarttime= no bootl.rc
 String blInstalledVersion = "";  // lido do bootl.rc (version=); default BL_VERSION se ausente
 int blAccepted = 0;              // lido do bootl.rc (accepted=); 1 = disclaimer aceito
+uint8_t gGpHid[GP_BUTTON_COUNT];
+uint8_t gGpAnaL = 0, gGpAnaR = 0;
 
 SPIClass spiSD(HSPI);
 Preferences prefs;
@@ -288,6 +293,83 @@ bool ps2host_send_bytes(const uint8_t* data, int n) {
     const uint32_t fails = ps2host.stats().txFail - fail0;
     Serial.printf("[PS2TX] enviados=%u falhas=%u\n", sent, fails);
     return fails == 0 && sent >= (uint32_t)n;
+}
+
+bool ps2_tdisplay_present() { return gKbdPortDev == PS2DEV_TDISPLAY; }
+
+static bool ps2_send_simple_cmd(uint8_t cmd) {
+    uint8_t p[4] = { PS2TX_MAGIC0, PS2TX_MAGIC1, cmd, 0 };
+    p[3] = p[0] ^ p[1] ^ p[2];
+    return ps2host_send_bytes(p, 4);
+}
+
+bool ps2_learn_begin() {
+    ps2host.flushRx();
+    return ps2_send_simple_cmd(PS2TX_CMD_LEARN_ON);
+}
+
+void ps2_learn_end() {
+    ps2_send_simple_cmd(PS2TX_CMD_LEARN_OFF);
+    ps2host.flushRx();
+}
+
+void ps2_learn_settle() {
+    delay(1000);
+    ps2host.flushRx();
+    ps2_flush();
+}
+
+int ps2_wait_pad_event(uint8_t* hid, uint32_t timeoutMs) {
+    uint8_t st = 0;
+    uint8_t tag = 0;
+    uint32_t t = millis();
+    while (millis() - t < timeoutMs) {
+        int b = ps2host.read();
+        if (b < 0) {
+            delay(1);
+            continue;
+        }
+        uint8_t ub = (uint8_t)b;
+        if (st == 0) {
+            if (ub == PS2TX_LEARN_R0) st = 1;
+            else if (ub == KEY_ESC) return -1;
+        } else if (st == 1) {
+            if (ub == PS2TX_LEARN_R1 || ub == PS2TX_ANA_R1) {
+                tag = ub;
+                st = 2;
+            } else if (ub == PS2TX_LEARN_R0) {
+                st = 1;
+            } else {
+                st = 0;
+            }
+        } else {
+            *hid = ub;
+            if (tag == PS2TX_ANA_R1) return 2;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+bool ps2_send_gp_remap() {
+    uint8_t pkt[8 + GP_BUTTON_COUNT * 2];
+    int n = 0;
+    pkt[n++] = PS2TX_MAGIC0;
+    pkt[n++] = PS2TX_MAGIC1;
+    pkt[n++] = PS2TX_CMD_REMAP;
+    pkt[n++] = (uint8_t)GP_BUTTON_COUNT;
+    for (int i = 0; i < GP_BUTTON_COUNT; i++) {
+        pkt[n++] = gGpHid[i];
+        pkt[n++] = GP_BUTTONS[i].id;
+    }
+    pkt[n++] = gGpAnaL;
+    pkt[n++] = gGpAnaR;
+    uint8_t chk = 0;
+    for (int i = 0; i < n; i++) chk ^= pkt[i];
+    pkt[n++] = chk;
+    Serial.printf("[PS2] remap %d pairs anaL=%d anaR=%d\n",
+                  GP_BUTTON_COUNT, (int)gGpAnaL, (int)gGpAnaR);
+    return ps2host_send_bytes(pkt, n);
 }
 
 // Espera o proximo byte DA MESMA PORTA (crucial — nao pode cruzar com o
@@ -785,6 +867,7 @@ void setup() {
 
     // Lê /bootl.rc e define ps2DatPin / ps2ClkPin / kbdConfigIdx
     loadRC();
+    ensureBootlKeyRc();
     drawKbdBadge();   // redraw the badge now that loadRC() set the real kbdConfigIdx
 
     // Bring the keyboard up with the loaded C1/C2/C3 pins RIGHT NOW, so the user can
@@ -809,6 +892,10 @@ void setup() {
             ps2col = C_CYAN;
         }
         statusLine("PS/2 port", ps2lbl, ps2col);
+        if (gKbdPortDev == PS2DEV_TDISPLAY) {
+            delay(50);
+            ps2_send_gp_remap();
+        }
     }
 
     // Configura magic button (lido do bootl.rc; GPIO36 INPUT-ONLY, pull-up externo obrigatório)
@@ -886,27 +973,23 @@ void setup() {
             statusY = MENU_Y_START;
             statusLine("NO EMULATORS FOUND", C_RED);
             statusLine("(F1 / 1 / Right = maintenance menu)", C_CYAN);
-            statusLine("Download emulators now? Y/N", C_YELLOW);
-  
+            statusLine("Download emulators now?", C_YELLOW);
 
-            ps2_flush();
-            uint8_t key = 0;
-            while (key == 0) key = ps2_get_key();
-
-            if (key == 0x35) {                       // Y -> run the WiFi/HTTP updater
+            int ans = promptYesNo(true, true);
+            if (ans == PROMPT_YES) {
                 runUpdater();
                 ps2_flush();
                 fillRect(0, 0, HRES, VRES, C_BLACK);
                 drawHeader();
-                scanFolders();                       // pick up whatever was installed
-            } else if (key == KEY_F1 || key == KEY_1 || key == KEY_RIGHT) {
+                scanFolders();
+            } else if (ans == PROMPT_MAINT || ans == PROMPT_ABORT) {
                 showMaintenanceMenu();
                 ps2_flush();
                 fillRect(0, 0, HRES, VRES, C_BLACK);
                 drawHeader();
                 scanFolders();
             }
-            // any other key: loop and ask again
+            // NO: loop and ask again
         }
 
         // Emulators now exist — fall through to the normal menu below.

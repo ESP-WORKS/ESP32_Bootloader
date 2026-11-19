@@ -2,7 +2,7 @@
 // ===========================================================================
 // disclaimer.h - First-run legal disclaimer with accept gate (EN / PT / ES).
 // Shown once until the user accepts; the accepted=1 flag is stored in bootl.rc.
-//   L = switch language   Y = accept and continue
+// Footer menu: Left/Right to move, Space/Enter to select.
 // ===========================================================================
 #include "bootloader.h"
 
@@ -71,19 +71,47 @@ static const DiscLang DISC_LANGS[] = {
 };
 static const int DISC_LANG_COUNT = 3;
 
-// Direct language keys (PS/2 set 2 make codes)
-#define KEY_DISC_E  0x24   // E - English
-#define KEY_DISC_P  0x4D   // P - Portugues
-#define KEY_DISC_S  0x1B   // S - Espanol
-#define KEY_Y_SCAN  0x35   // Y - accept
-#define KEY_N_SCAN  0x31   // N - decline (reset)
-
-// Language index order must match DISC_LANGS[] below: 0=EN, 1=PT, 2=ES.
 #define DISC_LANG_EN 0
 #define DISC_LANG_PT 1
 #define DISC_LANG_ES 2
 
-static void drawDisclaimer(int lang) {
+#define DISC_MENU_COUNT 5
+#define DISC_OPT_PT     0
+#define DISC_OPT_EN     1
+#define DISC_OPT_ES     2
+#define DISC_OPT_AGREE  3
+#define DISC_OPT_DECLINE 4
+
+static const char* const DISC_MENU[DISC_MENU_COUNT] = {
+    "PORTUGUES", "ENGLISH", "ESPANOL", "I AGREE", "DECLINE",
+};
+
+static void drawDisclaimerMenu(int selected) {
+    const int fy = VRES - 10;
+    fillRect(0, fy - 2, HRES, 12, C_BLACK);
+
+    int totalW = 0;
+    int widths[DISC_MENU_COUNT];
+    for (int i = 0; i < DISC_MENU_COUNT; i++) {
+        widths[i] = (int)strlen(DISC_MENU[i]) * 5;
+        totalW += widths[i];
+    }
+    const int gap = 8;
+    totalW += gap * (DISC_MENU_COUNT - 1);
+    int x = (HRES - totalW) / 2;
+    if (x < 2) x = 2;
+
+    for (int i = 0; i < DISC_MENU_COUNT; i++) {
+        bool isSel = (i == selected);
+        Color ink   = isSel ? C_BLACK : C_CYAN;
+        Color paper = isSel ? C_GREEN : C_BLACK;
+        if (isSel) fillRect(x - 1, fy - 2, widths[i] + 2, 11, paper);
+        drawString(x, fy, DISC_MENU[i], ink, paper, &fabgl::FONT_5x7);
+        x += widths[i] + gap;
+    }
+}
+
+static void drawDisclaimer(int lang, int menuSel) {
     fillRect(0, 0, HRES, VRES, C_BLACK);
     drawKbdBadge();   // keyboard config badge in the top-left corner
 
@@ -98,32 +126,21 @@ static void drawDisclaimer(int lang) {
         y += 9;
     }
 
-    // Footer bar with controls (localized)
-    int fy = VRES - 10;
-    fillRect(0, fy - 2, HRES, 12, C_BLACK);
-    const char* foot;
-    if (lang == DISC_LANG_PT)
-        foot = "P=Port  E=Ingl  S=Esp    Y=Concordo  N=Recusar";
-    else if (lang == DISC_LANG_ES)
-        foot = "P=Port  E=Ingl  S=Esp    Y=Acepto  N=Rechazar";
-    else
-        foot = "P=Port  E=Engl  S=Span   Y=I Agree  N=Decline";
-    drawString(6, fy, foot, C_CYAN, C_BLACK, &fabgl::FONT_5x7);
+    drawDisclaimerMenu(menuSel);
 }
 
-// Core disclaimer loop. P/E/S switch language; Y accepts (saves accepted=1); N resets.
-// When allowDecline is false (re-showing from the menu), N just closes without reset.
+// Core disclaimer loop. Left/Right moves the footer bar; Space/Enter selects.
+// When allowDecline is false (re-showing from the menu), Decline just closes.
 // Redraws the header on exit so the logo the disclaimer cleared comes back.
 static void runDisclaimer(bool allowDecline) {
     ps2_init();
     delay(200);
     ps2_flush();
 
-    int lang = DISC_LANG_EN;   // start in English
-    drawDisclaimer(lang);
+    int lang = DISC_LANG_EN;
+    int menuSel = DISC_OPT_EN;
+    drawDisclaimer(lang, menuSel);
 
-    // Magic button debounce (cycles C1/C2/C3 so the user can get a working keyboard
-    // before pressing Y, even if it booted on the wrong pins).
     uint32_t lastBtnMs = 0;
     bool lastBtnState = HIGH;
     Serial.printf("[DISC] magic button pin=GPIO%d initial=%d\n",
@@ -131,9 +148,8 @@ static void runDisclaimer(bool allowDecline) {
     uint32_t dbgLast = 0;
 
     while (true) {
-        // --- Magic button: cycle keyboard config on the fly ---
         bool btnNow = digitalRead(magicBtnPin);
-        if (millis() - dbgLast > 1000) {   // log button level once per second
+        if (millis() - dbgLast > 1000) {
             dbgLast = millis();
             Serial.printf("[DISC] btn=%d\n", btnNow);
         }
@@ -147,49 +163,63 @@ static void runDisclaimer(bool allowDecline) {
             delay(200);
             ps2_flush();
             Serial.printf("[DISC] magic button -> %s\n", KBD_CONFIGS[kbdConfigIdx].label);
-            drawKbdBadge();   // update the badge
+            drawKbdBadge();
         }
         lastBtnState = btnNow;
 
-        // --- Keyboard (non-blocking) ---
         if (!ps2_available()) { delay(1); continue; }
         uint8_t key = ps2_get_key();
         if (key == 0) continue;
 
-        if (key == KEY_DISC_E) {
-            lang = DISC_LANG_EN; drawDisclaimer(lang);
-        } else if (key == KEY_DISC_P) {
-            lang = DISC_LANG_PT; drawDisclaimer(lang);
-        } else if (key == KEY_DISC_S) {
-            lang = DISC_LANG_ES; drawDisclaimer(lang);
-        } else if (key == KEY_Y_SCAN) {
-            if (allowDecline) {        // first-run accept persists the flag
+        bool isLeft  = (key == KEY_LEFT  || key == 0x6B);
+        bool isRight = (key == KEY_RIGHT || key == 0x74);
+        if (isLeft) {
+            menuSel = (menuSel + DISC_MENU_COUNT - 1) % DISC_MENU_COUNT;
+            drawDisclaimerMenu(menuSel);
+            continue;
+        }
+        if (isRight) {
+            menuSel = (menuSel + 1) % DISC_MENU_COUNT;
+            drawDisclaimerMenu(menuSel);
+            continue;
+        }
+        if (key != KEY_ENTER && key != KEY_SPACE) continue;
+
+        if (menuSel == DISC_OPT_PT) {
+            lang = DISC_LANG_PT;
+            drawDisclaimer(lang, menuSel);
+        } else if (menuSel == DISC_OPT_EN) {
+            lang = DISC_LANG_EN;
+            drawDisclaimer(lang, menuSel);
+        } else if (menuSel == DISC_OPT_ES) {
+            lang = DISC_LANG_ES;
+            drawDisclaimer(lang, menuSel);
+        } else if (menuSel == DISC_OPT_AGREE) {
+            if (allowDecline) {
                 blAccepted = 1;
                 saveRC();
                 Serial.println("[DISC] accepted");
             }
             drawHeader();
             return;
-        } else if (key == KEY_N_SCAN) {
+        } else if (menuSel == DISC_OPT_DECLINE) {
             if (allowDecline) {
                 Serial.println("[DISC] declined -> reset");
                 shutdownForReboot();
                 ESP.restart();
             } else {
-                drawHeader();          // re-show from menu: just close
+                drawHeader();
                 return;
             }
         }
     }
 }
 
-// First-run gate: shows the disclaimer only if not yet accepted. Y accepts, N resets.
 void showDisclaimerIfNeeded() {
     if (blAccepted == 1) return;
     runDisclaimer(true);
 }
 
-// Menu option: always show the disclaimer. Y or N just closes (no reset, no flag change).
 void showDisclaimer() {
     runDisclaimer(false);
 }

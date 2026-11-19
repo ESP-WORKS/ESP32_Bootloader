@@ -11,7 +11,8 @@
 #include "bootloader.h"
 
 #define RC_FILE "/bootl.rc"
-#define RC_MAX_LINES 32
+#define RC_FILE_TMP "/bootl.rc.tmp"
+#define RC_MAX_LINES 80
 #define RC_LINE_LEN  64
 
 // ---------------------------------------------------------------------------
@@ -80,6 +81,9 @@ void loadRC() {
     bool found = false;
     bool hadVersionKey = false;
     bool hadAutoStart = false;
+    for (int i = 0; i < GP_BUTTON_COUNT; i++) gGpHid[i] = GP_BUTTONS[i].id;
+    gGpAnaL = 0;
+    gGpAnaR = 0;
 
     File f = SD.open(RC_FILE, FILE_READ);
     if (f) {
@@ -101,6 +105,14 @@ void loadRC() {
             if (rcParseLine(line, "version", val, sizeof(val))) { blInstalledVersion = String(val); hadVersionKey = true; }
             if (rcParseLine(line, "accepted", val, sizeof(val))) blAccepted = atoi(val);
             if (rcParseLine(line, "autostarttime", val, sizeof(val))) { autoStartTime = atoi(val); hadAutoStart = true; }
+            if (rcParseLine(line, "gp_anaL", val, sizeof(val))) gGpAnaL = (uint8_t)atoi(val);
+            if (rcParseLine(line, "gp_anaR", val, sizeof(val))) gGpAnaR = (uint8_t)atoi(val);
+            for (int i = 0; i < GP_BUTTON_COUNT; i++) {
+                char gpkey[16];
+                snprintf(gpkey, sizeof(gpkey), "gp_%s", GP_BUTTONS[i].iniName);
+                if (rcParseLine(line, gpkey, val, sizeof(val)))
+                    gGpHid[i] = (uint8_t)atoi(val);
+            }
         }
         f.close();
         found = true;
@@ -153,10 +165,14 @@ void loadRC() {
 // Preserva linhas com chaves desconhecidas (extensível para futuros GPIOs).
 // ---------------------------------------------------------------------------
 void saveRC() {
-    // 1. Lê todas as linhas existentes (para preservar chaves desconhecidas)
-    char lines[RC_MAX_LINES][RC_LINE_LEN];
+    // BSS, not loopTask stack — 80*64 would overflow the 8KB Arduino default
+    // and panic after Config Gamepad (remap OK, then canary on save).
+    static char lines[RC_MAX_LINES][RC_LINE_LEN];
     int  lineCount = 0;
     bool hadDat = false, hadClk = false, hadMagic = false, hadVersion = false, hadAccepted = false, hadAutoStart = false;
+    bool hadAnaL = false, hadAnaR = false;
+    bool hadGp[GP_BUTTON_COUNT];
+    for (int i = 0; i < GP_BUTTON_COUNT; i++) hadGp[i] = false;
 
     File rf = SD.open(RC_FILE, FILE_READ);
     if (rf) {
@@ -196,6 +212,22 @@ void saveRC() {
         } else if (rcParseLine(lines[i], "autostarttime", val, sizeof(val))) {
             snprintf(lines[i], RC_LINE_LEN, "autostarttime=%d", autoStartTime);
             hadAutoStart = true;
+        } else if (rcParseLine(lines[i], "gp_anaL", val, sizeof(val))) {
+            snprintf(lines[i], RC_LINE_LEN, "gp_anaL=%d", (int)gGpAnaL);
+            hadAnaL = true;
+        } else if (rcParseLine(lines[i], "gp_anaR", val, sizeof(val))) {
+            snprintf(lines[i], RC_LINE_LEN, "gp_anaR=%d", (int)gGpAnaR);
+            hadAnaR = true;
+        } else {
+            for (int b = 0; b < GP_BUTTON_COUNT; b++) {
+                char gpkey[16];
+                snprintf(gpkey, sizeof(gpkey), "gp_%s", GP_BUTTONS[b].iniName);
+                if (rcParseLine(lines[i], gpkey, val, sizeof(val))) {
+                    snprintf(lines[i], RC_LINE_LEN, "%s=%d", gpkey, (int)gGpHid[b]);
+                    hadGp[b] = true;
+                    break;
+                }
+            }
         }
     }
 
@@ -212,15 +244,30 @@ void saveRC() {
         snprintf(lines[lineCount++], RC_LINE_LEN, "accepted=%d", blAccepted);
     if (!hadAutoStart && lineCount < RC_MAX_LINES)
         snprintf(lines[lineCount++], RC_LINE_LEN, "autostarttime=%d", autoStartTime);
-
-    // 4. Reescreve o arquivo
-    if (SD.exists(RC_FILE)) SD.remove(RC_FILE);
-    File wf = SD.open(RC_FILE, FILE_WRITE);
-    if (wf) {
-        for (int i = 0; i < lineCount; i++) wf.printf("%s\n", lines[i]);
-        wf.close();
-        Serial.printf("RC: bootl.rc salvo com %s\n", KBD_CONFIGS[kbdConfigIdx].label);
-    } else {
-        Serial.println("RC: ERRO ao salvar bootl.rc");
+    if (!hadAnaL && lineCount < RC_MAX_LINES)
+        snprintf(lines[lineCount++], RC_LINE_LEN, "gp_anaL=%d", (int)gGpAnaL);
+    if (!hadAnaR && lineCount < RC_MAX_LINES)
+        snprintf(lines[lineCount++], RC_LINE_LEN, "gp_anaR=%d", (int)gGpAnaR);
+    for (int b = 0; b < GP_BUTTON_COUNT; b++) {
+        if (!gpButtonPresent(b) || hadGp[b] || lineCount >= RC_MAX_LINES) continue;
+        snprintf(lines[lineCount++], RC_LINE_LEN, "gp_%s=%d",
+                 GP_BUTTONS[b].iniName, (int)gGpHid[b]);
     }
+
+    // Write to a temp file first so a crash cannot wipe bootl.rc (disclaimer
+    // would come back). Then replace the original.
+    if (SD.exists(RC_FILE_TMP)) SD.remove(RC_FILE_TMP);
+    File wf = SD.open(RC_FILE_TMP, FILE_WRITE);
+    if (!wf) {
+        Serial.println("RC: ERRO ao salvar bootl.rc (tmp)");
+        return;
+    }
+    for (int i = 0; i < lineCount; i++) wf.printf("%s\n", lines[i]);
+    wf.close();
+    if (SD.exists(RC_FILE)) SD.remove(RC_FILE);
+    if (!SD.rename(RC_FILE_TMP, RC_FILE)) {
+        Serial.println("RC: ERRO ao renomear bootl.rc.tmp");
+        return;
+    }
+    Serial.printf("RC: bootl.rc salvo com %s\n", KBD_CONFIGS[kbdConfigIdx].label);
 }

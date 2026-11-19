@@ -134,7 +134,7 @@ void runExtractFirmware() {
         }
 
         char q[100];
-        snprintf(q, sizeof(q), "Extract %s? Y/N", base);
+        snprintf(q, sizeof(q), "Extract %s?", base);
         statusLine(q, C_YELLOW);
 
         // copy name because entry will be reused
@@ -143,10 +143,12 @@ void runExtractFirmware() {
         fileNameCopy[sizeof(fileNameCopy) - 1] = '\0';
         entry.close();
 
-        ps2_flush();
-        uint8_t key = 0;
-        while (key == 0) key = ps2_get_key();
-        if (key != 0x35) {  // not Y
+        int ans = promptYesNo(true);
+        if (ans == PROMPT_ABORT) {
+            root.close();
+            return;
+        }
+        if (ans != PROMPT_YES) {
             statusLine("Skipped", fileNameCopy, C_WHITE);
             continue;
         }

@@ -159,6 +159,7 @@ static void drawAutobootLabel(int ox, int oy, uint8_t align,
 
 void drawAutobootKeymap(const Keymap* km) {
     for (int i = 0; i < GP_BUTTON_COUNT; i++) {
+        if (!gpButtonPresent(i)) continue;
         const AutobootGpLabel& L = AUTOBOOT_GP_LABELS[i];
         const char* key = (km && km->keys[i][0]) ? km->keys[i] : "--";
         drawAutobootLabel(L.ox, L.oy, L.align, GP_BUTTONS[i].iniName, key);
@@ -224,6 +225,91 @@ void statusLine(const char* label, const char* value, Color color) {
 
 void statusLine(const char* value, Color color) {
     statusLine("", value, color);
+}
+
+#define PROMPT_NO    0
+#define PROMPT_YES   1
+#define PROMPT_MAINT 2
+#define PROMPT_ABORT 3
+
+static const char* const YESNO_LABEL[2] = { "YES", "NO" };
+
+static void drawYesNoBar(int selected) {
+    const int fy = VRES - 10;
+    fillRect(0, fy - 2, HRES, 12, C_BLACK);
+
+    int widths[2];
+    int totalW = 0;
+    for (int i = 0; i < 2; i++) {
+        widths[i] = (int)strlen(YESNO_LABEL[i]) * 5;
+        totalW += widths[i];
+    }
+    const int gap = 16;
+    totalW += gap;
+    int x = (HRES - totalW) / 2;
+
+    for (int i = 0; i < 2; i++) {
+        bool isSel = (i == selected);
+        Color ink   = isSel ? C_BLACK : C_CYAN;
+        Color paper = isSel ? C_GREEN : C_BLACK;
+        if (isSel) fillRect(x - 1, fy - 2, widths[i] + 2, 11, paper);
+        drawString(x, fy, YESNO_LABEL[i], ink, paper, &fabgl::FONT_5x7);
+        x += widths[i] + gap;
+    }
+}
+
+static void clearYesNoBar() {
+    fillRect(0, VRES - 12, HRES, 12, C_BLACK);
+}
+
+// Footer YES|NO. Left/Right moves; Enter confirms the bar.
+// A=ENTER confirms; B=SPACE and N = NO; HOME/ESC aborts to the previous screen.
+// Keyboard Y still means YES.
+// defaultYes: start on YES (install/update) or NO (reinstall).
+// allowMaint: F1 / 1 return PROMPT_MAINT (Right stays on the bar).
+int promptYesNo(bool defaultYes, bool allowMaint = false) {
+    int sel = defaultYes ? 0 : 1;
+    drawYesNoBar(sel);
+    ps2_flush();
+
+    while (true) {
+        uint8_t key = ps2_get_key();
+        if (key == 0) { delay(1); continue; }
+
+        if (allowMaint && (key == KEY_F1 || key == KEY_1)) {
+            clearYesNoBar();
+            return PROMPT_MAINT;
+        }
+        if (key == 0x35) {                 // Y
+            clearYesNoBar();
+            return PROMPT_YES;
+        }
+        if (key == KEY_ESC) {
+            clearYesNoBar();
+            return PROMPT_ABORT;
+        }
+        if (key == KEY_N_KEY || key == KEY_SPACE) {
+            clearYesNoBar();
+            return PROMPT_NO;
+        }
+
+        bool isLeft  = (key == KEY_LEFT  || key == 0x6B);
+        bool isRight = (key == KEY_RIGHT || key == 0x74);
+        if (isLeft) {
+            sel = 0;
+            drawYesNoBar(sel);
+            continue;
+        }
+        if (isRight) {
+            sel = 1;
+            drawYesNoBar(sel);
+            continue;
+        }
+        if (key != KEY_ENTER) continue;
+
+        clearYesNoBar();
+        return (sel == 0) ? PROMPT_YES : PROMPT_NO;
+    }
 }
 
 void drawProgress(int percent, size_t written, size_t total, const char* action = "Flashing") {
@@ -553,6 +639,7 @@ enum {
     MAINT_EXTRACT,
     MAINT_DISCLAIMER,
     MAINT_WIFI,
+    MAINT_GAMEPAD,
     MAINT_CANCEL,
     MAINT_COUNT
 };
@@ -566,6 +653,7 @@ static const char* const MAINT_ITEMS[MAINT_COUNT] = {
     "Extract Firmware (Eremus)",
     "Show Disclaimer",
     "Reset Wifi Credentials",
+    "Config Gamepad",
     "Cancel",
 };
 
@@ -638,6 +726,94 @@ static bool maintConfirm(const char* msg) {
     }
 }
 
+static const char* const GP_PRESS_HINT[GP_BUTTON_COUNT] = {
+    "A - South", "B - East", "X - West", "Y - North",
+    "UP - North", "DOWN - South", "LEFT - West", "RIGHT - East",
+    "L1", "R1", "L2", "R2", "L3", "R3", "START", "SELECT", "HOME",
+};
+
+static void drawGamepadConfigFrame(const char* title, const char* hint) {
+    fillRect(0, 56, HRES, VRES - 56, C_BLACK);
+    int tw = (int)strlen(title) * 6;
+    int tx = (HRES - tw) / 2;
+    if (tx < 0) tx = 0;
+    drawString(tx, 56, title, C_YELLOW, C_BLACK);
+    if (hint) {
+        int hw = (int)strlen(hint) * 6;
+        int hx = (HRES - hw) / 2;
+        if (hx < 0) hx = 0;
+        drawString(hx, 68, hint, C_CYAN, C_BLACK);
+    }
+    cv.waitCompletion(false);
+    drawGamepad((HRES - GPAD_W) / 2, 80);
+}
+
+void showGamepadConfig() {
+    if (!ps2_tdisplay_present()) {
+        fillRect(0, 56, HRES, VRES - 56, C_BLACK);
+        drawString(10, 80, "T-Display not found", C_RED, C_BLACK);
+        drawString(10, 96, "Press any key", C_WHITE, C_BLACK);
+        while (ps2_get_key() == 0);
+        return;
+    }
+
+    if (!ps2_learn_begin()) {
+        fillRect(0, 56, HRES, VRES - 56, C_BLACK);
+        drawString(10, 80, "Learn mode failed", C_RED, C_BLACK);
+        drawString(10, 96, "Press any key", C_WHITE, C_BLACK);
+        while (ps2_get_key() == 0);
+        return;
+    }
+
+    bool aborted = false;
+    for (int i = 0; i < GP_BUTTON_COUNT && !aborted; i++) {
+        if (!gpButtonPresent(i)) continue;
+        char title[40];
+        snprintf(title, sizeof(title), "Press %s", GP_PRESS_HINT[i]);
+        drawGamepadConfigFrame(title, "15s skip   ESC abort");
+        uint8_t hid = 0;
+        int ev = ps2_wait_pad_event(&hid, 15000);
+        if (ev < 0) { aborted = true; break; }
+        if (ev == 1 && hid >= 1 && hid <= 0x11) {
+            gGpHid[i] = hid;
+            Serial.printf("[gpcfg] %s <- hid %u\n", GP_BUTTONS[i].iniName, hid);
+            speakerClick();
+        } else {
+            Serial.printf("[gpcfg] %s skip (keep %u)\n",
+                          GP_BUTTONS[i].iniName, (unsigned)gGpHid[i]);
+        }
+        ps2_learn_settle();
+    }
+
+    if (!aborted) {
+        drawGamepadConfigFrame("Move LEFT stick", "as D-pad   10s skip");
+        uint8_t hid = 0;
+        int ev = ps2_wait_pad_event(&hid, 10000);
+        if (ev < 0) aborted = true;
+        else if (ev == 2 && hid == 1) { gGpAnaL = 1; speakerClick(); }
+        else if (ev == 0) gGpAnaL = 0;
+        if (!aborted) ps2_learn_settle();
+    }
+    if (!aborted) {
+        drawGamepadConfigFrame("Move RIGHT stick", "as D-pad   10s skip");
+        uint8_t hid = 0;
+        int ev = ps2_wait_pad_event(&hid, 10000);
+        if (ev < 0) aborted = true;
+        else if (ev == 2 && hid == 2) { gGpAnaR = 1; speakerClick(); }
+        else if (ev == 0) gGpAnaR = 0;
+    }
+
+    ps2_send_gp_remap();
+    ps2_learn_end();
+    if (!aborted) saveRC();
+
+    fillRect(0, 56, HRES, VRES - 56, C_BLACK);
+    drawString(10, 80, aborted ? "Config cancelled" : "Saved to /bootl.rc",
+               aborted ? C_YELLOW : C_GREEN, C_BLACK);
+    drawString(10, 96, "Press any key", C_WHITE, C_BLACK);
+    while (ps2_get_key() == 0);
+}
+
 void showMaintenanceMenu() {
     int selected = 0;
     drawMaintenanceScreen(selected);
@@ -675,6 +851,13 @@ void showMaintenanceMenu() {
         if (selected == MAINT_DISCLAIMER) {
             showDisclaimer();
             ps2_flush();
+            drawMaintenanceScreen(selected);
+            continue;
+        }
+        if (selected == MAINT_GAMEPAD) {
+            showGamepadConfig();
+            ps2_flush();
+            drawHeader();
             drawMaintenanceScreen(selected);
             continue;
         }

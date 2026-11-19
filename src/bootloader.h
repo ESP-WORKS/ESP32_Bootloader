@@ -120,6 +120,8 @@ extern int magicBtnPin;
 // bootl.rc-backed values — defined in main.cpp
 extern String blInstalledVersion;   // version= key
 extern int    blAccepted;           // accepted= key (1 = disclaimer accepted)
+extern uint8_t gGpHid[GP_BUTTON_COUNT];
+extern uint8_t gGpAnaL, gGpAnaR;
 
 struct MenuEntry {
     char name[64];
@@ -147,6 +149,12 @@ void bootEmulatorDirect();
 void bootEmulator();
 bool doOTA(const char* binPath, const char* folderPath, const char* versionName);
 void scanFolders();
+bool ps2_tdisplay_present();
+bool ps2_learn_begin();
+void ps2_learn_end();
+void ps2_learn_settle();
+int  ps2_wait_pad_event(uint8_t* hid, uint32_t timeoutMs);
+bool ps2_send_gp_remap();
 
 // --------------------------------------------------------------------------
 // UI + updater modules (order matters: render first, updater uses render)

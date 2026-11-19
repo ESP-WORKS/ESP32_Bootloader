@@ -516,29 +516,23 @@ void runUpdater() {
         char question[80];
         if (isNew) {
             snprintf(question, sizeof(question),
-                     "Install %s v%s? Y/N", name, version);
+                     "Install %s v%s?", name, version);
         } else if (upToDate) {
-            // Already installed and current — offer a reinstall instead of skipping.
             snprintf(question, sizeof(question),
-                     "%s v%s up to date. Reinstall? Y/N", name, version);
+                     "%s v%s up to date. Reinstall?", name, version);
         } else {
             snprintf(question, sizeof(question),
-                     "Update %s %s->%s? Y/N",
+                     "Update %s %s->%s?",
                      name, localVersion.c_str(), version);
         }
 
         statusLine(question, upToDate ? C_GREEN : C_YELLOW);
 
-        // Limpa o buffer do teclado antes de aguardar a resposta.
-        ps2_flush();
-
-        uint8_t key = 0;
-        while (key == 0) {
-            key = ps2_get_key();
-        }
-
-        // 0x35 = make code for 'Y' (PS/2 set 2, US)
-        if (key != 0x35) {
+        // Install/Update start on YES; Reinstall starts on NO.
+        // ESC/HOME leaves the updater and returns to the F1 menu.
+        int ans = promptYesNo(!upToDate);
+        if (ans == PROMPT_ABORT) break;
+        if (ans != PROMPT_YES) {
             statusLine("Skip", name, C_WHITE);
             continue;
         }
