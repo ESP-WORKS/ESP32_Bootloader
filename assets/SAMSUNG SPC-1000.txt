@@ -1,1 +1,1 @@
-SPC-1000 emulator by Andre Chaves
+SPC-1000 emulator by Andre Chaves & Xudor

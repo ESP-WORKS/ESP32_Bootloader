@@ -295,12 +295,90 @@ bool ps2host_send_bytes(const uint8_t* data, int n) {
     return fails == 0 && sent >= (uint32_t)n;
 }
 
-bool ps2_tdisplay_present() { return gKbdPortDev == PS2DEV_TDISPLAY; }
+bool ps2_tdisplay_present() {
+    // Temporario: nao bloquear Config Gamepad se o ping falhar nesta VGA32.
+    return true;
+}
 
 static bool ps2_send_simple_cmd(uint8_t cmd) {
     uint8_t p[4] = { PS2TX_MAGIC0, PS2TX_MAGIC1, cmd, 0 };
     p[3] = p[0] ^ p[1] ^ p[2];
     return ps2host_send_bytes(p, 4);
+}
+
+static bool ps2_wait_tag(uint8_t t0, uint8_t t1, uint32_t timeoutMs) {
+    uint8_t seq[2] = { t0, t1 };
+    return ps2host_wait_seq(seq, 2, timeoutMs);
+}
+
+bool ps2_gp_scan_on() {
+    return ps2_send_simple_cmd(PS2TX_CMD_SCAN_ON);
+}
+
+bool ps2_gp_scan_off() {
+    return ps2_send_simple_cmd(PS2TX_CMD_SCAN_OFF);
+}
+
+bool ps2_gp_list(char names[][PS2TX_GP_NAME_MAX + 1], uint8_t* idxs, int maxN, int* outN) {
+    *outN = 0;
+    ps2host.flushRx();
+    if (!ps2_send_simple_cmd(PS2TX_CMD_LIST)) return false;
+    if (!ps2_wait_tag(PS2TX_LIST_R0, PS2TX_LIST_R1, 800)) return false;
+    uint8_t n = 0;
+    if (!ps2host_wait_byte(&n, 300)) return false;
+    for (int i = 0; i < n; i++) {
+        uint8_t idx = 0, nlen = 0;
+        if (!ps2host_wait_byte(&idx, 300)) return false;
+        if (!ps2host_wait_byte(&nlen, 300)) return false;
+        if (nlen > PS2TX_GP_NAME_MAX) return false;
+        char tmp[PS2TX_GP_NAME_MAX + 1];
+        for (int c = 0; c < nlen; c++) {
+            uint8_t b;
+            if (!ps2host_wait_byte(&b, 300)) return false;
+            tmp[c] = (char)b;
+        }
+        tmp[nlen] = '\0';
+        if (i < maxN) {
+            idxs[i] = idx;
+            memcpy(names[i], tmp, nlen + 1);
+            (*outN)++;
+        }
+    }
+    return true;
+}
+
+bool ps2_gp_pair(uint8_t idx, uint8_t* status) {
+    uint8_t p[5] = { PS2TX_MAGIC0, PS2TX_MAGIC1, PS2TX_CMD_PAIR, idx, 0 };
+    p[4] = p[0] ^ p[1] ^ p[2] ^ p[3];
+    ps2host.flushRx();
+    if (!ps2host_send_bytes(p, 5)) return false;
+    if (!ps2_wait_tag(PS2TX_ACK_R0, PS2TX_ACK_R1, 800)) return false;
+    return ps2host_wait_byte(status, 300);
+}
+
+bool ps2_gp_unpair(uint8_t* status) {
+    ps2host.flushRx();
+    if (!ps2_send_simple_cmd(PS2TX_CMD_UNPAIR)) return false;
+    if (!ps2_wait_tag(PS2TX_ACK_R0, PS2TX_ACK_R1, 800)) return false;
+    return ps2host_wait_byte(status, 300);
+}
+
+bool ps2_gp_status(GpStatus* st) {
+    memset(st, 0, sizeof(*st));
+    ps2host.flushRx();
+    if (!ps2_send_simple_cmd(PS2TX_CMD_STATUS)) return false;
+    if (!ps2_wait_tag(PS2TX_STAT_R0, PS2TX_STAT_R1, 800)) return false;
+    uint8_t nlen = 0;
+    if (!ps2host_wait_byte(&st->flags, 300)) return false;
+    if (!ps2host_wait_byte(&nlen, 300)) return false;
+    if (nlen > PS2TX_GP_NAME_MAX) return false;
+    for (int i = 0; i < nlen; i++) {
+        uint8_t b;
+        if (!ps2host_wait_byte(&b, 300)) return false;
+        st->name[i] = (char)b;
+    }
+    st->name[nlen] = '\0';
+    return true;
 }
 
 bool ps2_learn_begin() {
@@ -552,13 +630,14 @@ void sendKeymapForBoot(const char* folderPath) {
     DisplayController.end();
     delay(20);
 
+    /*
     if (gKbdPortDev != PS2DEV_TDISPLAY) {
         Serial.printf("[KEYMAP] skip — %s na porta do teclado\n",
                       gKbdPortDev == PS2DEV_KEYBOARD ? "teclado" : "desconhecido");
         Serial.flush();
         return;
     }
-
+    */
     Serial.println("[KEYMAP] sending packet...");
     Serial.flush();
     bool sent = ps2_send_keymap(km);   // best-effort; has its own timeouts

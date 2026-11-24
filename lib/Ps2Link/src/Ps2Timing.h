@@ -10,10 +10,11 @@ namespace ps2 {
 constexpr uint32_t kHalfUs = 40;
 constexpr uint32_t kSetupUs = 10;
 constexpr uint32_t kInhibitUs = 150;
-constexpr uint32_t kIdleStableUs = 80;
+// FabGL segura CLK longo; idle precisa de janela maior antes de reenviar.
+constexpr uint32_t kIdleStableUs = 200;
 constexpr uint32_t kByteTimeoutUs = 20000;
-constexpr uint32_t kIdleTimeoutUs = 50000;
-constexpr uint32_t kInterByteUs = 300;
+constexpr uint32_t kIdleTimeoutUs = 100000;
+constexpr uint32_t kInterByteUs = 500;
 constexpr uint32_t kStuckFrameUs = 2500;
 
 inline uint8_t oddParity(uint8_t data) {

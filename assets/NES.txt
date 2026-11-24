@@ -1,1 +1,1 @@
-NES Emulator ported by Leo Manes
+NES Emulator by Andre Chaves based on MCEMU by Jean-MarcHarvengt

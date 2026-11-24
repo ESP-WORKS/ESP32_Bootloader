@@ -169,12 +169,16 @@ void Ps2Device::taskLoop() {
             continue;
         }
 
+        // Nao dar pop antes do sucesso: se o host (emulador) inibe o CLK,
+        // sendByte falha e o scancode tem que ser reenviado.
         uint8_t b = 0;
-        if (tx_.pop(&b)) {
+        if (tx_.peek(&b)) {
             if (sendByte(b)) {
+                tx_.pop(&b);
                 stats_.txBytes++;
             } else {
                 stats_.txFail++;
+                vTaskDelay(1);
             }
             continue;
         }

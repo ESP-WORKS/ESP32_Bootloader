@@ -748,20 +748,163 @@ static void drawGamepadConfigFrame(const char* title, const char* hint) {
     drawGamepad((HRES - GPAD_W) / 2, 80);
 }
 
-void showGamepadConfig() {
-    if (!ps2_tdisplay_present()) {
-        fillRect(0, 56, HRES, VRES - 56, C_BLACK);
-        drawString(10, 80, "T-Display not found", C_RED, C_BLACK);
-        drawString(10, 96, "Press any key", C_WHITE, C_BLACK);
-        while (ps2_get_key() == 0);
+static void gpCfgWaitKey() {
+    ps2_flush();
+    while (ps2_get_key() == 0) delay(1);
+}
+
+static void gpCfgMsg(const char* title, const char* line, Color col) {
+    fillRect(0, 56, HRES, VRES - 56, C_BLACK);
+    drawString(10, 80, title, col, C_BLACK);
+    if (line) drawString(10, 96, line, C_WHITE, C_BLACK);
+    drawString(10, 112, "Press any key", C_CYAN, C_BLACK);
+    cv.waitCompletion(false);
+    gpCfgWaitKey();
+}
+
+static bool gpCfgNeedTdisplay() {
+    //if (ps2_tdisplay_present()) return true;
+    //gpCfgMsg("Please insert PS/2 - bluetooth adapter", nullptr, C_YELLOW);
+    //return false;
+    return true;
+}
+
+enum {
+    GPCFG_PAIR = 0,
+    GPCFG_UNPAIR,
+    GPCFG_BUTTONS,
+    GPCFG_BACK,
+    GPCFG_COUNT
+};
+
+static const char* const GPCFG_ITEMS[GPCFG_COUNT] = {
+    "Pair Gamepad",
+    "Unpair Gamepad",
+    "Configure Buttons",
+    "Back",
+};
+
+static void drawGpCfgRow(int idx, int selected) {
+    bool isSel = (idx == selected);
+    Color ink   = isSel ? C_BLACK : C_GREEN;
+    Color paper = isSel ? C_GREEN : C_BLACK;
+    int y = MENU_Y_START + 16 + idx * MENU_LINE_H;
+    fillRect(MAINT_BAR_X, y, MAINT_BAR_W, MENU_LINE_H, paper);
+    cv.selectFont(&fabgl::FONT_6x12);
+    drawString(MAINT_BAR_X + 2, y, GPCFG_ITEMS[idx], ink, paper);
+}
+
+static void drawGpCfgMenu(int selected, const char* statusLine) {
+    fillRect(0, MENU_Y_START - 12, HRES, VRES - MENU_Y_START + 12, C_BLACK);
+    drawString(10, MENU_Y_START - 10, "CONFIG GAMEPAD", C_YELLOW, C_BLACK);
+    if (statusLine && statusLine[0])
+        drawString(10, MENU_Y_START + 2, statusLine, C_CYAN, C_BLACK);
+    for (int i = 0; i < GPCFG_COUNT; i++) drawGpCfgRow(i, selected);
+    cv.waitCompletion(false);
+}
+
+static void showGamepadPair() {
+    if (!gpCfgNeedTdisplay()) return;
+    if (!ps2_gp_scan_on()) {
+        gpCfgMsg("Scan failed", "T-Display did not answer", C_RED);
         return;
     }
 
-    if (!ps2_learn_begin()) {
+    char names[PS2TX_GP_MAX][PS2TX_GP_NAME_MAX + 1];
+    uint8_t idxs[PS2TX_GP_MAX];
+    int count = 0;
+    int selected = 0;
+    uint32_t lastList = 0;
+
+    auto draw = [&]() {
         fillRect(0, 56, HRES, VRES - 56, C_BLACK);
-        drawString(10, 80, "Learn mode failed", C_RED, C_BLACK);
-        drawString(10, 96, "Press any key", C_WHITE, C_BLACK);
-        while (ps2_get_key() == 0);
+        drawString(10, 56, "PAIR GAMEPAD", C_YELLOW, C_BLACK);
+        drawString(10, 68, "Put pad in pairing mode", C_CYAN, C_BLACK);
+        if (count == 0) {
+            drawString(10, 92, "Searching...", C_WHITE, C_BLACK);
+        } else {
+            if (selected >= count) selected = count - 1;
+            if (selected < 0) selected = 0;
+            for (int i = 0; i < count; i++) {
+                bool isSel = (i == selected);
+                Color ink   = isSel ? C_BLACK : C_GREEN;
+                Color paper = isSel ? C_GREEN : C_BLACK;
+                int y = 88 + i * MENU_LINE_H;
+                fillRect(MAINT_BAR_X, y, MAINT_BAR_W, MENU_LINE_H, paper);
+                drawString(MAINT_BAR_X + 2, y, names[i], ink, paper);
+            }
+        }
+        drawString(10, VRES - 14, "ENTER pair   ESC back", C_WHITE, C_BLACK);
+        cv.waitCompletion(false);
+    };
+
+    draw();
+    while (true) {
+        if (millis() - lastList > 500) {
+            lastList = millis();
+            int n = 0;
+            if (ps2_gp_list(names, idxs, PS2TX_GP_MAX, &n)) count = n;
+            draw();
+        }
+        if (ps2_available()) {
+            uint8_t key = ps2_get_key();
+            if (key == 0) continue;
+            speakerClick();
+            if (key == KEY_ESC || key == KEY_SPACE) break;
+            if ((key == KEY_UP || key == KEY_UP_EXT || key == KEY_Q) && selected > 0) {
+                selected--;
+                draw();
+            } else if ((key == KEY_DOWN || key == KEY_DOWN_EXT || key == KEY_A_NAV) &&
+                       selected < count - 1) {
+                selected++;
+                draw();
+            } else if (key == KEY_ENTER) {
+                if (count <= 0) continue;
+                uint8_t st = 0;
+                if (ps2_gp_pair(idxs[selected], &st) && st == 1) {
+                    ps2_gp_scan_off();
+                    char msg[40];
+                    snprintf(msg, sizeof(msg), "Paired: %s", names[selected]);
+                    gpCfgMsg(msg, "Discovery off", C_GREEN);
+                    return;
+                }
+                gpCfgMsg("Pair failed", "Try again", C_RED);
+                draw();
+            }
+        }
+        delay(1);
+    }
+    ps2_gp_scan_off();
+}
+
+static void showGamepadUnpair() {
+    if (!gpCfgNeedTdisplay()) return;
+    GpStatus st;
+    char line[40] = "Forget saved pad?";
+    if (ps2_gp_status(&st) && (st.flags & 0x01) && st.name[0])
+        snprintf(line, sizeof(line), "Unpair %s?", st.name);
+    if (!maintConfirm(line)) return;
+
+    uint8_t ack = 0;
+    if (!ps2_gp_unpair(&ack)) {
+        gpCfgMsg("Unpair failed", "T-Display did not answer", C_RED);
+        return;
+    }
+    gpCfgMsg("Unpaired", "T-Display is restarting", C_YELLOW);
+}
+
+static void showGamepadButtons() {
+    if (!gpCfgNeedTdisplay()) return;
+    {
+        GpStatus st;
+        if (!ps2_gp_status(&st) || !(st.flags & 0x02)) {
+            gpCfgMsg("No gamepad connected", "Pair first, then configure", C_YELLOW);
+            return;
+        }
+    }
+
+    if (!ps2_learn_begin()) {
+        gpCfgMsg("Learn mode failed", "T-Display did not answer", C_RED);
         return;
     }
 
@@ -786,32 +929,88 @@ void showGamepadConfig() {
     }
 
     if (!aborted) {
-        drawGamepadConfigFrame("Move LEFT stick", "as D-pad   10s skip");
+        drawGamepadConfigFrame("Move LEFT stick", "15s skip   ESC abort");
         uint8_t hid = 0;
-        int ev = ps2_wait_pad_event(&hid, 10000);
+        int ev = ps2_wait_pad_event(&hid, 15000);
+        (void)hid;
         if (ev < 0) aborted = true;
-        else if (ev == 2 && hid == 1) { gGpAnaL = 1; speakerClick(); }
-        else if (ev == 0) gGpAnaL = 0;
-        if (!aborted) ps2_learn_settle();
+        else if (ev == 2) gGpAnaL = 1;
+        ps2_learn_settle();
     }
     if (!aborted) {
-        drawGamepadConfigFrame("Move RIGHT stick", "as D-pad   10s skip");
+        drawGamepadConfigFrame("Move RIGHT stick", "15s skip   ESC abort");
         uint8_t hid = 0;
-        int ev = ps2_wait_pad_event(&hid, 10000);
+        int ev = ps2_wait_pad_event(&hid, 15000);
+        (void)hid;
         if (ev < 0) aborted = true;
-        else if (ev == 2 && hid == 2) { gGpAnaR = 1; speakerClick(); }
-        else if (ev == 0) gGpAnaR = 0;
+        else if (ev == 2) gGpAnaR = 1;
+        ps2_learn_settle();
     }
 
-    ps2_send_gp_remap();
     ps2_learn_end();
-    if (!aborted) saveRC();
+    if (!aborted) {
+        saveRC();
+        ps2_send_gp_remap();
+        gpCfgMsg("Saved to /bootl.rc", "Remap sent", C_GREEN);
+    } else {
+        gpCfgMsg("Config cancelled", nullptr, C_YELLOW);
+    }
+}
 
-    fillRect(0, 56, HRES, VRES - 56, C_BLACK);
-    drawString(10, 80, aborted ? "Config cancelled" : "Saved to /bootl.rc",
-               aborted ? C_YELLOW : C_GREEN, C_BLACK);
-    drawString(10, 96, "Press any key", C_WHITE, C_BLACK);
-    while (ps2_get_key() == 0);
+void showGamepadConfig() {
+    int selected = 0;
+    char status[40] = "";
+    GpStatus st;
+    if (ps2_gp_status(&st)) {
+        if (st.flags & 0x02) snprintf(status, sizeof(status), "Connected: %s", st.name);
+        else if (st.flags & 0x01) snprintf(status, sizeof(status), "Paired: %s", st.name);
+        else snprintf(status, sizeof(status), "No gamepad paired");
+    }
+    drawGpCfgMenu(selected, status);
+
+    while (true) {
+        uint8_t key = ps2_get_key();
+        if (key == 0) continue;
+        speakerClick();
+        if ((key == KEY_UP || key == KEY_UP_EXT || key == KEY_Q) && selected > 0) {
+            int old = selected;
+            selected--;
+            drawGpCfgRow(old, selected);
+            drawGpCfgRow(selected, selected);
+            cv.waitCompletion(false);
+            continue;
+        }
+        if ((key == KEY_DOWN || key == KEY_DOWN_EXT || key == KEY_A_NAV) &&
+            selected < GPCFG_COUNT - 1) {
+            int old = selected;
+            selected++;
+            drawGpCfgRow(old, selected);
+            drawGpCfgRow(selected, selected);
+            cv.waitCompletion(false);
+            continue;
+        }
+        if (key == KEY_ESC || key == KEY_SPACE ||
+            (key == KEY_ENTER && selected == GPCFG_BACK)) {
+            break;
+        }
+        if (key != KEY_ENTER) continue;
+
+        if (selected == GPCFG_PAIR) showGamepadPair();
+        else if (selected == GPCFG_UNPAIR) showGamepadUnpair();
+        else if (selected == GPCFG_BUTTONS) showGamepadButtons();
+
+        {
+            GpStatus st2;
+            if (ps2_gp_status(&st2)) {
+                if (st2.flags & 0x02) snprintf(status, sizeof(status), "Connected: %s", st2.name);
+                else if (st2.flags & 0x01) snprintf(status, sizeof(status), "Paired: %s", st2.name);
+                else snprintf(status, sizeof(status), "No gamepad paired");
+            }
+        }
+        ps2_flush();
+        drawHeader();
+        drawGpCfgMenu(selected, status);
+    }
 }
 
 void showMaintenanceMenu() {

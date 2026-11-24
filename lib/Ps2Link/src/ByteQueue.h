@@ -19,6 +19,14 @@ public:
         return true;
     }
 
+    bool peek(uint8_t* b) const {
+        if (head_ == tail_) {
+            return false;
+        }
+        *b = buf_[tail_];
+        return true;
+    }
+
     bool pop(uint8_t* b) {
         if (head_ == tail_) {
             return false;

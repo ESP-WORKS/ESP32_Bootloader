@@ -1,1 +1,1 @@
-HTTP file server by FG1998
+Norton Commander clone by FG1998 using GROK 4.6 High Fast (in cursor.ai)

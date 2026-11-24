@@ -15,6 +15,7 @@
 #include "logo.h"
 #include "gamepad.h"
 #include "keymap.h"
+#include "ps2_tx.h"
 
 // SD pinout — same scheme as ESPectrum FileUtils / hardpins.h
 // CLK/MOSI/CS are shared; only MISO differs by board/chip package
@@ -155,6 +156,12 @@ void ps2_learn_end();
 void ps2_learn_settle();
 int  ps2_wait_pad_event(uint8_t* hid, uint32_t timeoutMs);
 bool ps2_send_gp_remap();
+bool ps2_gp_scan_on();
+bool ps2_gp_scan_off();
+bool ps2_gp_list(char names[][PS2TX_GP_NAME_MAX + 1], uint8_t* idxs, int maxN, int* outN);
+bool ps2_gp_pair(uint8_t idx, uint8_t* status);
+bool ps2_gp_unpair(uint8_t* status);
+bool ps2_gp_status(GpStatus* st);
 
 // --------------------------------------------------------------------------
 // UI + updater modules (order matters: render first, updater uses render)

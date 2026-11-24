@@ -16,12 +16,31 @@
 #define PS2TX_CMD_LEARN_ON  0x02
 #define PS2TX_CMD_LEARN_OFF 0x03
 #define PS2TX_CMD_REMAP     0x04
+#define PS2TX_CMD_SCAN_ON   0x05
+#define PS2TX_CMD_SCAN_OFF  0x06
+#define PS2TX_CMD_LIST      0x07
+#define PS2TX_CMD_PAIR      0x08
+#define PS2TX_CMD_UNPAIR    0x09
+#define PS2TX_CMD_STATUS    0x0A
 #define PS2TX_PING_R0     0xA5
 #define PS2TX_PING_R1     0x5A
 #define PS2TX_PING_R2     0xA5
 #define PS2TX_LEARN_R0    0xA5
 #define PS2TX_LEARN_R1    0x5A
 #define PS2TX_ANA_R1      0x5B
+#define PS2TX_LIST_R0     0xA5
+#define PS2TX_LIST_R1     0x5C
+#define PS2TX_ACK_R0      0xA5
+#define PS2TX_ACK_R1      0x5E
+#define PS2TX_STAT_R0     0xA5
+#define PS2TX_STAT_R1     0x5F
+#define PS2TX_GP_MAX      6
+#define PS2TX_GP_NAME_MAX 20
+
+struct GpStatus {
+    uint8_t flags;
+    char    name[PS2TX_GP_NAME_MAX + 1];
+};
 
 bool ps2host_send_bytes(const uint8_t* data, int n);
 
